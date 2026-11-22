@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Orbit ring with an upward arrow: "upload to the hub" -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,30 A24,24 0 1,1 53.99,30 Z"
+        android:strokeWidth="3"
+        android:strokeColor="#FF7C4DFF"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M30,62 C40,74 68,74 80,54"
+        android:strokeWidth="2.5"
+        android:strokeColor="#FFFF3DCB"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:fillColor="#FF34E7FF"
+        android:pathData="M54,38 L66,52 L58,52 L58,68 L50,68 L50,52 L42,52 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M78,34 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M32,40 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0" />
+</vector>

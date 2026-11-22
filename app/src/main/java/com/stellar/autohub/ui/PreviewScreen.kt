@@ -1,0 +1,178 @@
+package com.stellar.autohub.ui
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import com.stellar.autohub.AutoHubApp
+import com.stellar.autohub.upload.FileStatus
+import com.stellar.autohub.upload.UploadMode
+import com.stellar.autohub.ui.theme.Stellar
+
+private enum class Section { ADDED, CHANGED, DELETED, UNCHANGED, SKIPPED }
+
+@Composable
+fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommitted: (String) -> Unit) {
+    val app = AutoHubApp.instance
+    val repo = app.store.repo(repoId)
+    val payload by vm.payload.collectAsState()
+    val st by vm.preview.collectAsState()
+
+    LaunchedEffect(repoId) {
+        if (vm.preview.value?.repoId != repoId || vm.preview.value?.plan == null) vm.startPreview(repoId)
+    }
+    LaunchedEffect(st?.doneHistoryId) { st?.doneHistoryId?.let(onCommitted) }
+
+    var open by remember { mutableStateOf(setOf(Section.ADDED, Section.CHANGED, Section.DELETED)) }
+    fun toggle(s: Section) { open = if (s in open) open - s else open + s }
+
+    Screen(title = "Review upload", onBack = if (st?.committing == true) null else onBack) { pad ->
+        val s = st
+        if (repo == null || payload == null && s?.doneSha == null) {
+            Box(Modifier.padding(pad).padding(16.dp)) { Text("Nothing to preview. Pick files again.", color = Stellar.Dim) }
+            return@Screen
+        }
+        if (s == null || s.loading) {
+            Box(Modifier.padding(pad).padding(16.dp)) { Busy("Comparing with ${repo.fullName}…") }
+            return@Screen
+        }
+        val plan = s.plan
+        if (plan == null) {
+            Column(Modifier.padding(pad).padding(16.dp)) {
+                ErrorBox(s.error ?: "Couldn't build a preview")
+                TextButton(onClick = { vm.startPreview(repoId) }) { Text("Try again") }
+            }
+            return@Screen
+        }
+        val mirror = s.mode == UploadMode.MIRROR
+        val deleteCount = if (mirror) s.selectedDeletes.size else 0
+        val nothing = plan.added + plan.changed + deleteCount == 0
+
+        LazyColumn(
+            Modifier.padding(pad).fillMaxSize(),
+            contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 32.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Panel(accent = Stellar.Cyan) {
+                    Text("${payload?.label ?: ""}  →  ${repo.fullName} @ ${repo.branch}", style = MaterialTheme.typography.titleMedium)
+                    plan.version?.let { Text("Version in upload: v$it", color = Stellar.Dim) }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Chip("+${plan.added} NEW", Stellar.Green)
+                        Chip("~${plan.changed} CHANGED", Stellar.Cyan)
+                        Chip("−$deleteCount DELETE", Stellar.Red)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("${plan.unchanged} already identical · ${plan.skipped.size} skipped", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            if (s.releaseExists) item {
+                InfoBox("A release v${plan.version} already exists. The build will run, but no new release gets published until you bump versionName.")
+            }
+            items(plan.warnings) { InfoBox(it) }
+            s.error?.let { e -> item { ErrorBox(e) } }
+
+            item {
+                Panel {
+                    Label("Options")
+                    if (plan.deletable.isNotEmpty()) {
+                        Text("Files in the repo that aren't in this upload:", color = Stellar.Dim)
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = !mirror, onClick = { vm.setMode(UploadMode.PATCH) }, label = { Text("Keep them (patch)") })
+                            FilterChip(selected = mirror, onClick = { vm.setMode(UploadMode.MIRROR) }, label = { Text("Delete them (mirror)") })
+                        }
+                    } else {
+                        Text("No old files to clean up.", color = Stellar.Dim)
+                    }
+                    plan.canStrip?.let { root ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Switch(checked = plan.strippedRoot != null, onCheckedChange = { vm.setStrip(it) })
+                            Spacer(Modifier.width(8.dp))
+                            Text("Strip top folder \"$root/\"")
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = s.message, onValueChange = vm::setMessage,
+                        label = { Text("Commit message") }, modifier = Modifier.fillMaxWidth(), minLines = 1, maxLines = 4,
+                    )
+                }
+            }
+
+            fun header(sec: Section, title: String, count: Int, color: Color) {
+                item(key = "h-$sec") {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { toggle(sec) }.padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(if (sec in open) "▾ " else "▸ ", color = color)
+                        Text("$title ($count)", color = color, style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+            }
+
+            val added = plan.files.filter { it.status == FileStatus.ADDED }
+            val changed = plan.files.filter { it.status == FileStatus.CHANGED }
+            val same = plan.files.filter { it.status == FileStatus.UNCHANGED }
+
+            if (added.isNotEmpty()) {
+                header(Section.ADDED, "New", added.size, Stellar.Green)
+                if (Section.ADDED in open) items(added, key = { "a-" + it.path }) { MonoText("+ ${it.path}", Stellar.Green) }
+            }
+            if (changed.isNotEmpty()) {
+                header(Section.CHANGED, "Changed", changed.size, Stellar.Cyan)
+                if (Section.CHANGED in open) items(changed, key = { "c-" + it.path }) { MonoText("~ ${it.path}", Stellar.Cyan) }
+            }
+            if (mirror && plan.deletable.isNotEmpty()) {
+                header(Section.DELETED, "Delete", plan.deletable.size, Stellar.Red)
+                if (Section.DELETED in open) {
+                    item(key = "delall") {
+                        Row {
+                            TextButton(onClick = { vm.setAllDeletes(true) }) { Text("Select all") }
+                            TextButton(onClick = { vm.setAllDeletes(false) }) { Text("Select none") }
+                        }
+                    }
+                    items(plan.deletable, key = { "d-" + it.path }) { d ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.toggleDelete(d.path) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = d.path in s.selectedDeletes, onCheckedChange = { vm.toggleDelete(d.path) })
+                            MonoText("− ${d.path}", if (d.path in s.selectedDeletes) Stellar.Red else Stellar.Dim, Modifier.weight(1f))
+                            if (d.protected) Chip("PROTECTED", Stellar.Amber)
+                        }
+                    }
+                }
+            }
+            if (same.isNotEmpty()) {
+                header(Section.UNCHANGED, "Identical (not sent)", same.size, Stellar.Dim)
+                if (Section.UNCHANGED in open) items(same, key = { "u-" + it.path }) { MonoText("= ${it.path}", Stellar.Dim) }
+            }
+            if (plan.skipped.isNotEmpty()) {
+                header(Section.SKIPPED, "Skipped", plan.skipped.size, Stellar.Amber)
+                if (Section.SKIPPED in open) items(plan.skipped, key = { "s-" + it.path }) { MonoText("× ${it.path} (${it.reason})", Stellar.Amber) }
+            }
+
+            item {
+                Spacer(Modifier.height(8.dp))
+                if (s.committing) {
+                    Panel(accent = Stellar.Cyan) { Busy(s.progress) }
+                } else {
+                    Button(
+                        onClick = { vm.commit() }, enabled = !nothing,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                    ) { Text(if (nothing) "Nothing changed" else "Commit & build") }
+                }
+            }
+        }
+    }
+}
