@@ -10,6 +10,7 @@ import com.stellar.autohub.AutoHubApp
 import com.stellar.autohub.data.RepoProfile
 import com.stellar.autohub.install.InstallState
 import com.stellar.autohub.install.Installer
+import com.stellar.autohub.install.SignatureCheck
 import com.stellar.autohub.upload.PathRules
 import com.stellar.autohub.ui.theme.Stellar
 import kotlinx.coroutines.launch
@@ -28,6 +29,7 @@ fun InstallPanel(repo: RepoProfile, runId: Long = 0, expectedVersion: String? = 
     var error by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf<Float?>(null) }
     var tick by remember { mutableIntStateOf(0) }
+    var review by remember { mutableStateOf<Pair<java.io.File, SignatureCheck>?>(null) }
 
     LaunchedEffect(repo.id, repo.packageName, refreshKey, tick) {
         error = null
@@ -47,7 +49,10 @@ fun InstallPanel(repo: RepoProfile, runId: Long = 0, expectedVersion: String? = 
                 val apk = if (fromArtifact) installer.downloadArtifactApk(repo, runId) { progress = it }
                 else installer.downloadReleaseApk(repo, st!!.latestRelease!!) { progress = it }
                 progress = null
-                installer.install(apk)
+                val check = installer.inspect(apk, app.vault.keys.value)
+                val wrongPkg = repo.packageName.isNotBlank() && check.apkPackage != null && check.apkPackage != repo.packageName
+                if (check.mismatch || wrongPkg || check.apkCert == null) review = apk to check
+                else installer.install(apk)
             } catch (e: Exception) {
                 progress = null
                 error = e.message
@@ -106,5 +111,41 @@ fun InstallPanel(repo: RepoProfile, runId: Long = 0, expectedVersion: String? = 
             }
             runId > 0 -> OutlinedButton(onClick = { go(true) }) { Text("Install from this build") }
         }
+    }
+
+    review?.let { (apk, c) ->
+        val self = c.apkPackage == ctx.packageName
+        AlertDialog(
+            onDismissRequest = { review = null },
+            title = { Text(if (c.mismatch) "Different signing key" else "Check this APK") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    when {
+                        c.apkCert == null -> Text("Android couldn't read this APK's signature. It may be damaged or unsigned.", color = Stellar.Red)
+                        c.mismatch -> Text(
+                            "The installed app was signed with a different key, so Android won't update it. " +
+                                "You'd need to uninstall it first, which deletes its data on this phone." +
+                                if (self) "\n\nThis is AutoHub itself: make a backup in Settings first." else "",
+                            color = Stellar.Amber,
+                        )
+                    }
+                    if (repo.packageName.isNotBlank() && c.apkPackage != null && c.apkPackage != repo.packageName)
+                        Text("This APK is ${c.apkPackage}, but the repo's app is ${repo.packageName}.", color = Stellar.Amber)
+                    Text("APK: ${c.apkPackage ?: "?"} v${c.apkVersion ?: "?"}", color = Stellar.Dim)
+                    Text("Signed with: ${c.keyLabel ?: "a key not in AutoHub"}", color = Stellar.Dim)
+                    c.apkCert?.let { MonoText("New  ${it.take(23)}…", Stellar.Dim) }
+                    c.installedCert?.let { MonoText("Installed  ${it.take(23)}…", Stellar.Dim) }
+                }
+            },
+            confirmButton = {
+                when {
+                    c.mismatch -> TextButton(onClick = { review = null; c.apkPackage?.let(installer::uninstall) }) {
+                        Text("Uninstall current", color = Stellar.Red)
+                    }
+                    c.apkCert != null -> TextButton(onClick = { review = null; scope.launch { installer.install(apk) } }) { Text("Install anyway") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { review = null }) { Text("Cancel") } },
+        )
     }
 }

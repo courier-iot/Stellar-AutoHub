@@ -66,7 +66,7 @@ data class GhRef(val ref: String, val `object`: GhObjectRef)
 data class GhTreeRef(val sha: String)
 
 @Serializable
-data class GhCommit(val sha: String, val tree: GhTreeRef)
+data class GhCommit(val sha: String, val tree: GhTreeRef, val parents: List<GhSha> = emptyList(), val message: String = "")
 
 @Serializable
 data class GhTreeEntry(
@@ -86,6 +86,7 @@ data class GhSha(val sha: String)
 @Serializable
 data class GhRun(
     val id: Long,
+    val updated_at: String? = null,
     val name: String? = null,
     val display_title: String? = null,
     val status: String? = null,
@@ -97,7 +98,7 @@ data class GhRun(
 )
 
 @Serializable
-data class GhRuns(val workflow_runs: List<GhRun> = emptyList())
+data class GhRuns(val workflow_runs: List<GhRun> = emptyList(), val total_count: Int = 0)
 
 @Serializable
 data class GhStep(
@@ -130,7 +131,11 @@ data class GhAnnotation(
 )
 
 @Serializable
+data class GhArtifactRun(val id: Long = 0)
+
+@Serializable
 data class GhArtifact(
+    val workflow_run: GhArtifactRun? = null,
     val id: Long,
     val name: String,
     val size_in_bytes: Long = 0,
@@ -139,7 +144,7 @@ data class GhArtifact(
 )
 
 @Serializable
-data class GhArtifacts(val artifacts: List<GhArtifact> = emptyList())
+data class GhArtifacts(val artifacts: List<GhArtifact> = emptyList(), val total_count: Int = 0)
 
 @Serializable
 data class GhAsset(
@@ -150,7 +155,9 @@ data class GhAsset(
 
 @Serializable
 data class GhRelease(
+    val id: Long = 0,
     val tag_name: String,
+    val created_at: String? = null,
     val name: String? = null,
     val assets: List<GhAsset> = emptyList(),
 )
@@ -183,3 +190,28 @@ data class GhPublicKey(val key_id: String, val key: String)
 
 @Serializable
 data class GhContent(val name: String, val path: String, val type: String)
+
+@Serializable
+data class GhCompare(val ahead_by: Int = 0, val behind_by: Int = 0)
+
+/** An upload waiting for a connection (or for the user to review a secret warning). */
+@Serializable
+data class QueuedUpload(
+    val id: String,
+    val repoId: String,
+    val created: Long,
+    val label: String,
+    val message: String,
+    val structured: Boolean,
+    /** PATCH or MIRROR */
+    val mode: String = "PATCH",
+    val deletes: List<String> = emptyList(),
+    val stripOverride: Boolean? = null,
+    val excluded: List<String> = emptyList(),
+    val allowedLeaks: List<String> = emptyList(),
+    /** False when queued without a preview: only patch mode is allowed then. */
+    val reviewed: Boolean = true,
+    /** waiting | needs_review | failed */
+    val status: String = "waiting",
+    val error: String? = null,
+)

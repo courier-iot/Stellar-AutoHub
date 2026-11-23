@@ -29,7 +29,63 @@ data class InstallState(
     val apkAsset get() = latestRelease?.assets?.firstOrNull { it.name.endsWith(".apk", true) }
 }
 
+/** Who signed a downloaded APK, compared with the installed app. */
+data class SignatureCheck(
+    val apkPackage: String?,
+    val apkVersion: String?,
+    val apkCert: String?,
+    val installedCert: String?,
+    /** Label of the AutoHub vault key that signed the APK, if any. */
+    val keyLabel: String?,
+) {
+    val installed get() = installedCert != null
+    val mismatch get() = installedCert != null && apkCert != null && apkCert != installedCert
+}
+
 class Installer(private val context: Context, private val api: GitHubApi) {
+
+    private fun fingerprint(sig: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(sig).joinToString(":") { "%02X".format(it) }.take(47)
+
+    @Suppress("DEPRECATION")
+    private fun certOf(info: android.content.pm.PackageInfo?): String? {
+        if (info == null) return null
+        val sigs = if (Build.VERSION.SDK_INT >= 28) {
+            info.signingInfo?.let { si -> if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory?.lastOrNull()?.let { arrayOf(it) } }
+                ?: info.signatures
+        } else info.signatures
+        return sigs?.firstOrNull()?.toByteArray()?.let(::fingerprint)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun flags(): Int = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+
+    /** Reads the APK's package + signing certificate and compares with what's installed. */
+    fun inspect(apk: File, vaultKeys: List<com.stellar.autohub.secrets.SigningKey>): SignatureCheck {
+        val pm = context.packageManager
+        val archive = if (Build.VERSION.SDK_INT >= 33)
+            pm.getPackageArchiveInfo(apk.path, PackageManager.PackageInfoFlags.of(flags().toLong()))
+        else @Suppress("DEPRECATION") pm.getPackageArchiveInfo(apk.path, flags())
+        val pkg = archive?.packageName
+        val installed = pkg?.let {
+            try {
+                if (Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(it, PackageManager.PackageInfoFlags.of(flags().toLong()))
+                else @Suppress("DEPRECATION") pm.getPackageInfo(it, flags())
+            } catch (e: PackageManager.NameNotFoundException) { null }
+        }
+        val apkCert = certOf(archive)
+        return SignatureCheck(
+            apkPackage = pkg,
+            apkVersion = archive?.versionName,
+            apkCert = apkCert,
+            installedCert = certOf(installed),
+            keyLabel = vaultKeys.firstOrNull { apkCert != null && it.fingerprint.isNotEmpty() && apkCert.startsWith(it.fingerprint.take(40)) }?.label,
+        )
+    }
+
+    fun uninstall(pkg: String) {
+        context.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
 
     fun installedVersion(pkg: String): String? = try {
         if (pkg.isBlank()) null else {
@@ -124,7 +180,10 @@ class InstallReceiver : BroadcastReceiver() {
                 else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 confirm?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)?.let { context.startActivity(it) }
             }
-            PackageInstaller.STATUS_SUCCESS -> Toast.makeText(context, "Installed ✓", Toast.LENGTH_SHORT).show()
+            PackageInstaller.STATUS_SUCCESS -> {
+                Toast.makeText(context, "Installed ✓", Toast.LENGTH_SHORT).show()
+                com.stellar.autohub.AutoHubApp.instance.clearCache()
+            }
             PackageInstaller.STATUS_FAILURE_CONFLICT -> Toast.makeText(
                 context,
                 "Install blocked: the installed app was signed with a different key. Uninstall it first, then install again.",

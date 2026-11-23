@@ -17,9 +17,22 @@ import com.stellar.autohub.AutoHubApp
 import com.stellar.autohub.ui.theme.Stellar
 
 @Composable
-fun HomeScreen(openRepo: (String) -> Unit, addRepo: () -> Unit, openKeys: () -> Unit, openSettings: () -> Unit) {
+fun HomeScreen(
+    reLogin: () -> Unit,
+    openCrashes: () -> Unit,
+    openBackup: () -> Unit,
+    openRepo: (String) -> Unit,
+    addRepo: () -> Unit,
+    openKeys: () -> Unit,
+    openSettings: () -> Unit,
+) {
     val app = AutoHubApp.instance
     val data by app.store.data.collectAsState()
+    val authProblem by app.authProblem.collectAsState()
+    val online by app.online.collectAsState()
+    val keys by app.vault.keys.collectAsState()
+    val queue by com.stellar.autohub.upload.UploadQueue.items.collectAsState()
+    val newCrash = remember { app.crashes().firstOrNull()?.let { app.crashTime(it) > app.prefs.lastCrashSeen } ?: false }
 
     Screen(
         title = "Stellar AutoHub",
@@ -38,6 +51,36 @@ fun HomeScreen(openRepo: (String) -> Unit, addRepo: () -> Unit, openKeys: () -> 
         ) {
             item {
                 Text("Signed in as ${app.prefs.login.ifBlank { "GitHub user" }}", color = Stellar.Dim)
+            }
+            if (!online) item { InfoBox("Offline. Reconnecting automatically; uploads can be queued meanwhile.", Stellar.Amber) }
+            if (authProblem) item {
+                Panel(Modifier.clickable { reLogin() }, accent = Stellar.Red) {
+                    Label("Sign-in stopped working", Stellar.Red)
+                    Text("GitHub rejected the saved token (revoked or expired). Tap to sign in again. Your repos and keys stay.", color = Stellar.Red)
+                }
+            }
+            tokenWarning(app.api.tokenExpires, app.api.lastScopes)?.let { w -> item { InfoBox(w) } }
+            if (newCrash) item {
+                Panel(Modifier.clickable { openCrashes() }, accent = Stellar.Amber) {
+                    Text("AutoHub crashed last time. Tap to see the report (and copy it for Claude).", color = Stellar.Amber)
+                }
+            }
+            val waiting = queue.count { it.status == "waiting" }
+            val review = queue.count { it.status != "waiting" }
+            if (waiting + review > 0) item {
+                InfoBox(buildString {
+                    if (waiting > 0) append("$waiting upload(s) waiting for a connection. ")
+                    if (review > 0) append("$review queued upload(s) need a look (open the repo).")
+                }.trim(), Stellar.Cyan)
+            }
+            if (keys.isNotEmpty() && System.currentTimeMillis() - app.prefs.lastBackup > 30L * 24 * 3600 * 1000) item {
+                Panel(Modifier.clickable { openBackup() }, accent = Stellar.Violet) {
+                    Text(
+                        if (app.prefs.lastBackup == 0L) "Your signing keys only live on this phone. Tap to make an encrypted backup."
+                        else "Last backup was over a month ago. Tap to make a fresh one.",
+                        color = Stellar.Violet,
+                    )
+                }
             }
             if (data.repos.isEmpty()) {
                 item {
@@ -69,4 +112,22 @@ fun HomeScreen(openRepo: (String) -> Unit, addRepo: () -> Unit, openKeys: () -> 
             }
         }
     }
+}
+
+/** Warns about personal access tokens that expire soon or lack the workflow scope. */
+private fun tokenWarning(expires: String?, scopes: String?): String? {
+    if (expires != null) {
+        try {
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", java.util.Locale.US)
+            val t = fmt.parse(expires)?.time
+            if (t != null) {
+                val days = (t - System.currentTimeMillis()) / (24L * 3600 * 1000)
+                if (days < 0) return "Your GitHub token has expired. Make a new one and sign in again."
+                if (days <= 7) return "Your GitHub token expires in $days day(s). Make a new one before it stops working."
+            }
+        } catch (_: Exception) { }
+    }
+    if (scopes != null && scopes.isNotBlank() && !scopes.contains("workflow"))
+        return "Your token is missing the 'workflow' scope. Uploads that change .github/workflows will be rejected."
+    return null
 }

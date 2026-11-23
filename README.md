@@ -34,3 +34,17 @@ Upload a zip, files or a folder from your phone straight into a GitHub repo, wat
 ## Secrets
 
 The secrets screen reads the workflows, lists every `secrets.NAME` they use, and marks each one set or missing. **Apply signing key** fills the signing secrets automatically by matching their names. Values are encrypted on the phone (libsodium sealed box) before upload.
+
+## Security & upkeep (v1.1.0)
+
+- **App lock:** fingerprint or screen lock on open, after 0, 1, 5 or 15 minutes away. Sensitive actions ask again: key passwords and files, secrets, mirror deletes, undo, cleanup, backups.
+- **Secret scanner:** commits are blocked until each possible token, private key or config password is either left out or marked fine.
+- **Screenshot block** on the Keys, Secrets and Backup screens.
+- **APK signature check** before installing, plus the name of the vault key that signed it.
+- **Token health:** warns about revoked or expiring tokens and a missing `workflow` scope.
+- **Undo upload:** a new commit that restores the previous files. History is never rewritten.
+- **Encrypted backup** (`.sahb`, AES-256-GCM + PBKDF2) of repos, history, keys and settings.
+- **Auto version bump** when the version already has a release.
+- **GitHub storage cleanup:** old runs, artifacts and releases.
+- **Workflow health:** finds outdated actions and deprecation warnings, with one-tap fixes through the normal preview.
+- **Crash log** stored on the phone only, **offline queue**, **automatic cache cleanup**, and an **R8-shrunk APK**.

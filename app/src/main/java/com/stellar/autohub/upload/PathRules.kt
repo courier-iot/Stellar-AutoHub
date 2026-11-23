@@ -76,6 +76,27 @@ object PathRules {
     fun applicationId(gradle: String): String? =
         appIdKts.find(gradle)?.groupValues?.get(1) ?: appIdGroovy.find(gradle)?.groupValues?.get(1)
 
+    private val versionCodeKts = Regex("""versionCode\s*=\s*(\d+)""")
+    private val versionCodeGroovy = Regex("""versionCode\s+(\d+)""")
+
+    /** Sets versionName to [newVersion] and increments versionCode by one. */
+    fun bumpGradle(gradle: String, newVersion: String): String {
+        var t = gradle
+        t = versionKts.replace(t) { "versionName = \"$newVersion\"" }
+        t = versionGroovy.replace(t) { m -> m.value.replace(m.groupValues[1], newVersion) }
+        t = versionCodeKts.replace(t) { m -> "versionCode = ${(m.groupValues[1].toLong() + 1)}" }
+        t = versionCodeGroovy.replace(t) { m -> "versionCode ${(m.groupValues[1].toLong() + 1)}" }
+        return t
+    }
+
+    /** 1.2.3 -> 1.2.4 (missing parts count as 0). */
+    fun nextPatch(v: String): String {
+        val p = v.trimStart('v', 'V').split('.').map { it.takeWhile(Char::isDigit).toIntOrNull() ?: 0 }.toMutableList()
+        while (p.size < 3) p += 0
+        p[2] = p[2] + 1
+        return p.take(3).joinToString(".")
+    }
+
     val GRADLE_FILES = listOf("app/build.gradle.kts", "app/build.gradle")
 
     /** "1.10.2" > "1.9.9". Non-numeric parts count as 0. */

@@ -13,11 +13,20 @@ import com.stellar.autohub.AutoHubApp
 import com.stellar.autohub.BuildConfig
 import com.stellar.autohub.data.Prefs
 import com.stellar.autohub.data.RepoProfile
+import com.stellar.autohub.security.Guard
+import androidx.compose.ui.platform.LocalContext
 import com.stellar.autohub.ui.theme.Stellar
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onSignedOut: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, openCrashes: () -> Unit, openBackup: () -> Unit, onSignedOut: () -> Unit) {
     val app = AutoHubApp.instance
+    val ctx = LocalContext.current
+    var appLock by remember { mutableStateOf(app.prefs.appLock) }
+    var confirm by remember { mutableStateOf(app.prefs.confirmSensitive) }
+    var scan by remember { mutableStateOf(app.prefs.scanSecrets) }
+    var lockAfter by remember { mutableIntStateOf(app.prefs.lockAfterSec) }
+    var cache by remember { mutableLongStateOf(app.cacheBytes()) }
+    val canLock = remember { Guard.available(ctx) }
     var watch by remember { mutableStateOf(app.prefs.watchBuilds) }
     var strip by remember { mutableStateOf(app.prefs.autoStrip) }
     var ignore by remember { mutableStateOf(app.prefs.ignorePatterns) }
@@ -36,6 +45,7 @@ fun SettingsScreen(onBack: () -> Unit, onSignedOut: () -> Unit) {
             Panel {
                 Label("Account")
                 Text("Signed in as ${app.prefs.login.ifBlank { "?" }}")
+                app.api.tokenExpires?.let { Text("Token expires: $it", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall) }
                 app.api.lastScopes?.takeIf { it.isNotBlank() }?.let {
                     Text("Token scopes: $it", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
                     if (!it.contains("workflow")) Text("Missing 'workflow' scope: uploads that change .github/workflows will be rejected.", color = Stellar.Amber, style = MaterialTheme.typography.bodySmall)
@@ -43,6 +53,28 @@ fun SettingsScreen(onBack: () -> Unit, onSignedOut: () -> Unit) {
                 Spacer(Modifier.height(6.dp))
                 OutlinedTextField(clientId, { clientId = it.trim() }, label = { Text("OAuth Client ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 TextButton(onClick = { confirmOut = true }) { Text("Sign out", color = Stellar.Red) }
+            }
+
+            Panel(accent = Stellar.Violet) {
+                Label("Security", Stellar.Violet)
+                if (!canLock) Text("Set up a fingerprint or screen lock on your phone to use these.", color = Stellar.Amber, style = MaterialTheme.typography.bodySmall)
+                Toggle("App lock", "Fingerprint or screen lock to open AutoHub.", appLock) { on ->
+                    Guard.prompt(ctx, if (on) "Turn on app lock" else "Turn off app lock") { appLock = on; app.prefs.appLock = on; app.unlocked = true }
+                }
+                if (appLock) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(0 to "Instantly", 60 to "1 min", 300 to "5 min", 900 to "15 min").forEach { (sec, label) ->
+                        FilterChip(selected = lockAfter == sec, onClick = { lockAfter = sec; app.prefs.lockAfterSec = sec }, label = { Text(label) })
+                    }
+                }
+                Toggle("Confirm sensitive actions", "Asks before showing key passwords, saving key files, setting secrets, mirror deletes, undo and cleanup.", confirm) { on ->
+                    if (on) { confirm = true; app.prefs.confirmSensitive = true }
+                    else Guard.prompt(ctx, "Stop confirming sensitive actions") { confirm = false; app.prefs.confirmSensitive = false }
+                }
+                Toggle("Scan uploads for secrets", "Warns about tokens, private keys and passwords before they're committed.", scan) { on ->
+                    if (on) { scan = true; app.prefs.scanSecrets = true }
+                    else Guard.prompt(ctx, "Turn off secret scanning") { scan = false; app.prefs.scanSecrets = false }
+                }
+                TextButton(onClick = openBackup) { Text("Backup & restore →") }
             }
 
             Panel {
@@ -60,6 +92,16 @@ fun SettingsScreen(onBack: () -> Unit, onSignedOut: () -> Unit) {
                 )
                 Text("These are skipped from uploads and never deleted from repos. Keystores are on the list so your signing key never lands in a repo.", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = { ignore = Prefs.DEFAULT_IGNORE }) { Text("Reset to defaults") }
+            }
+
+            Panel {
+                Label("Maintenance")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Downloaded APKs & shared logs: ${com.stellar.autohub.ci.Cleanup.size(cache)}", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { app.clearCache(); cache = app.cacheBytes() }) { Text("Clear") }
+                }
+                Text("Cleared automatically after installs and when older than a day.", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = openCrashes) { Text("Crash logs (${app.crashes().size}) →") }
             }
 
             Panel {

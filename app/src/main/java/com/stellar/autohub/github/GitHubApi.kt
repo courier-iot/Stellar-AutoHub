@@ -25,7 +25,11 @@ class GitHubException(val code: Int, message: String) : IOException(message)
  * OkHttp drops the Authorization header on cross-host redirects, so log and
  * artifact downloads (which redirect to blob storage) are safe.
  */
-class GitHubApi(private val tokenProvider: () -> String?) {
+class GitHubApi(
+    private val tokenProvider: () -> String?,
+    /** Called when GitHub rejects the saved token (revoked / expired). */
+    private val onUnauthorized: () -> Unit = {},
+) {
 
     val json = Json { ignoreUnknownKeys = true; explicitNulls = false; coerceInputValues = true }
 
@@ -39,6 +43,9 @@ class GitHubApi(private val tokenProvider: () -> String?) {
 
     /** Scopes reported by GitHub for classic/OAuth tokens (empty for fine-grained). */
     @Volatile var lastScopes: String? = null
+
+    /** Expiry reported for personal access tokens, e.g. "2026-12-01 00:00:00 UTC". */
+    @Volatile var tokenExpires: String? = null
 
     private fun req(url: String, accept: String = "application/vnd.github+json"): Request.Builder {
         val b = Request.Builder()
@@ -57,10 +64,18 @@ class GitHubApi(private val tokenProvider: () -> String?) {
             val resp = try {
                 http.newCall(request).execute()
             } catch (e: IOException) {
-                if (attempt++ < 3) { delay(2000L * attempt); continue } else throw e
+                // Network switches (VPN/Tailscale on/off, Wi-Fi <-> mobile) break DNS and open
+                // connections for a few seconds: drop stale connections and retry for ~30s.
+                if (attempt++ < 6) {
+                    resetConnections()
+                    delay(1500L * attempt)
+                    continue
+                } else throw friendly(e)
             }
             resp.header("X-OAuth-Scopes")?.let { lastScopes = it }
+            resp.header("GitHub-Authentication-Token-Expiration")?.let { tokenExpires = it }
             val code = resp.code
+            if (code == 401 && request.url.host == "api.github.com" && request.header("Authorization") != null) onUnauthorized()
             val limited = code == 429 || (code == 403 && (resp.header("Retry-After") != null ||
                 resp.header("X-RateLimit-Remaining") == "0"))
             if ((limited || code in 502..504) && attempt < 5) {
@@ -77,6 +92,24 @@ class GitHubApi(private val tokenProvider: () -> String?) {
         }
         @Suppress("UNREACHABLE_CODE")
         throw IllegalStateException("unreachable")
+    }
+
+    /** Drops pooled connections, which may be tied to a network that just went away. */
+    fun resetConnections() {
+        try { http.connectionPool.evictAll() } catch (_: Exception) { }
+    }
+
+    private fun friendly(e: IOException): IOException = when (e) {
+        is java.net.UnknownHostException -> IOException(
+            "Can't reach GitHub: the phone couldn't look up ${e.message?.substringAfter('"')?.substringBefore('"') ?: "github.com"}. " +
+                "If you just switched a VPN (like Tailscale) or network, wait a few seconds and try again. " +
+                "If it keeps happening only with the VPN on, check its DNS settings.", e
+        )
+        is java.net.SocketTimeoutException -> IOException("GitHub took too long to answer. Check your connection and try again.", e)
+        is java.net.ConnectException, is java.net.NoRouteToHostException ->
+            IOException("Can't connect to GitHub right now (no route). Check your connection or VPN.", e)
+        is javax.net.ssl.SSLException -> IOException("Secure connection to GitHub failed (${e.message}). A VPN or network filter may be interfering.", e)
+        else -> e
     }
 
     private suspend fun text(request: Request): String {
@@ -166,6 +199,10 @@ class GitHubApi(private val tokenProvider: () -> String?) {
 
     suspend fun commit(owner: String, name: String, sha: String): GhCommit =
         get("/repos/$owner/$name/git/commits/$sha", GhCommit.serializer())
+
+    /** How many commits [head] is ahead of [base]. */
+    suspend fun compare(owner: String, name: String, base: String, head: String): GhCompare =
+        get("/repos/$owner/$name/compare/$base...$head", GhCompare.serializer())
 
     suspend fun tree(owner: String, name: String, sha: String): GhTree =
         get("/repos/$owner/$name/git/trees/$sha?recursive=1", GhTree.serializer())
@@ -274,6 +311,53 @@ class GitHubApi(private val tokenProvider: () -> String?) {
             .filter { it.type == "file" && (it.name.endsWith(".yml") || it.name.endsWith(".yaml")) }
             .map { it.path }
     } catch (e: GitHubException) { if (e.code == 404) emptyList() else throw e }
+
+    // ---------------- Storage cleanup ----------------
+
+    suspend fun allRuns(owner: String, name: String, max: Int = 1000): List<GhRun> {
+        val out = mutableListOf<GhRun>()
+        var page = 1
+        while (out.size < max) {
+            val r = get("/repos/$owner/$name/actions/runs?per_page=100&page=$page", GhRuns.serializer())
+            out += r.workflow_runs
+            if (r.workflow_runs.size < 100) break
+            page++
+        }
+        return out
+    }
+
+    suspend fun allArtifacts(owner: String, name: String, max: Int = 1000): List<GhArtifact> {
+        val out = mutableListOf<GhArtifact>()
+        var page = 1
+        while (out.size < max) {
+            val r = get("/repos/$owner/$name/actions/artifacts?per_page=100&page=$page", GhArtifacts.serializer())
+            out += r.artifacts
+            if (r.artifacts.size < 100) break
+            page++
+        }
+        return out
+    }
+
+    suspend fun releases(owner: String, name: String): List<GhRelease> {
+        val out = mutableListOf<GhRelease>()
+        for (page in 1..5) {
+            val list = get("/repos/$owner/$name/releases?per_page=100&page=$page", ListSerializer(GhRelease.serializer()))
+            out += list
+            if (list.size < 100) break
+        }
+        return out
+    }
+
+    private suspend fun delete(url: String) {
+        exec(req(url).delete().build()).use {
+            if (!it.isSuccessful && it.code != 404) throw GitHubException(it.code, errorMessage(it.code, it.body?.string() ?: ""))
+        }
+    }
+
+    suspend fun deleteRun(owner: String, name: String, id: Long) = delete("/repos/$owner/$name/actions/runs/$id")
+    suspend fun deleteArtifact(owner: String, name: String, id: Long) = delete("/repos/$owner/$name/actions/artifacts/$id")
+    suspend fun deleteRelease(owner: String, name: String, id: Long) = delete("/repos/$owner/$name/releases/$id")
+    suspend fun deleteTag(owner: String, name: String, tag: String) = delete("/repos/$owner/$name/git/refs/tags/${enc(tag)}")
 
     // ---------------- Downloads ----------------
 

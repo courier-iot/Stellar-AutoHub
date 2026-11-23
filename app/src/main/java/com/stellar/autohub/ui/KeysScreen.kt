@@ -15,6 +15,8 @@ import androidx.compose.ui.unit.dp
 import com.stellar.autohub.AutoHubApp
 import com.stellar.autohub.secrets.KeyImportException
 import com.stellar.autohub.secrets.SigningKey
+import com.stellar.autohub.security.Guard
+import com.stellar.autohub.security.SecureScreen
 import com.stellar.autohub.ui.theme.Stellar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -58,6 +60,7 @@ fun KeysScreen(onBack: () -> Unit) {
         exportKey = k
         saveFile.launch("${k.label.replace(Regex("[^A-Za-z0-9_-]"), "_")}.jks")
     }
+    SecureScreen()
 
     Screen(title = "Signing keys", onBack = onBack) { pad ->
         Column(
@@ -84,8 +87,8 @@ fun KeysScreen(onBack: () -> Unit) {
                     if (k.fingerprint.isNotEmpty()) MonoText("SHA-256 ${k.fingerprint}…", Stellar.Dim)
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(onClick = { export(k) }) { Text("Save file") }
-                        TextButton(onClick = { reveal = k }) { Text("Show password") }
+                        TextButton(onClick = { Guard.sensitive(ctx, "Save ${k.label}") { export(k) } }) { Text("Save file") }
+                        TextButton(onClick = { Guard.sensitive(ctx, "Show key password") { reveal = k } }) { Text("Show password") }
                         TextButton(onClick = { deleteKey = k }) { Text("Delete", color = Stellar.Red) }
                     }
                 }
@@ -141,7 +144,7 @@ fun KeysScreen(onBack: () -> Unit) {
             onDismissRequest = { deleteKey = null },
             title = { Text("Delete ${k.label}?") },
             text = { Text("Only removes it from AutoHub. If you have no other copy of the file, apps signed with it can't be updated anymore, only uninstalled and reinstalled.") },
-            confirmButton = { TextButton(onClick = { app.vault.remove(k.id); deleteKey = null }) { Text("Delete", color = Stellar.Red) } },
+            confirmButton = { TextButton(onClick = { deleteKey = null; Guard.sensitive(ctx, "Delete ${k.label}") { app.vault.remove(k.id) } }) { Text("Delete", color = Stellar.Red) } },
             dismissButton = { TextButton(onClick = { deleteKey = null }) { Text("Cancel") } },
         )
     }

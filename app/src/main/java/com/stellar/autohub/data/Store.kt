@@ -48,6 +48,24 @@ class Store(context: Context) {
         d.copy(history = d.history.map { if (it.id == id) block(it) else it })
     }
 
+    /** Merges a backup in: repos matched by owner/name, history de-duplicated by id. Returns repos added. */
+    fun restore(other: StoreData): Int {
+        var added = 0
+        update { d ->
+            val repos = d.repos.toMutableList()
+            val idMap = HashMap<String, String>()
+            for (r in other.repos) {
+                val existing = repos.find { it.fullName.equals(r.fullName, true) }
+                if (existing != null) idMap[r.id] = existing.id else { repos += r; idMap[r.id] = r.id; added++ }
+            }
+            val known = d.history.map { it.id }.toSet()
+            val hist = d.history + other.history.filter { it.id !in known && idMap.containsKey(it.repoId) }
+                .map { it.copy(repoId = idMap.getValue(it.repoId)) }
+            d.copy(repos = repos.sortedBy { it.fullName.lowercase() }, history = hist)
+        }
+        return added
+    }
+
     fun history(repoId: String): List<HistoryEntry> =
         _data.value.history.filter { it.repoId == repoId }.sortedByDescending { it.time }
 }

@@ -21,6 +21,8 @@ import com.stellar.autohub.secrets.SecretsManager
 import com.stellar.autohub.secrets.SecretsOverview
 import com.stellar.autohub.secrets.SigningKey
 import com.stellar.autohub.secrets.SigningRole
+import com.stellar.autohub.security.Guard
+import com.stellar.autohub.security.SecureScreen
 import com.stellar.autohub.ui.theme.Stellar
 import kotlinx.coroutines.launch
 
@@ -40,6 +42,8 @@ fun SecretsScreen(repoId: String, onBack: () -> Unit, openKeys: () -> Unit) {
     var busy by remember { mutableStateOf<String?>(null) }
 
     if (repo == null) { Screen("Secrets", onBack) { Text("Repo not found", Modifier.padding(it).padding(16.dp)) }; return }
+
+    SecureScreen()
 
     LaunchedEffect(refresh) {
         error = null
@@ -105,9 +109,11 @@ fun SecretsScreen(repoId: String, onBack: () -> Unit, openKeys: () -> Unit) {
     editing?.let { name ->
         SecretEditDialog(name, onDismiss = { editing = null }) { n, v ->
             editing = null
-            busy = "Saving $n…"
-            scope.launch {
-                try { app.secrets.put(repo, n, v); ctx.toast("$n saved"); refresh++ } catch (e: Exception) { error = e.message } finally { busy = null }
+            Guard.sensitive(ctx, "Set secret $n") {
+                busy = "Saving $n…"
+                scope.launch {
+                    try { app.secrets.put(repo, n, v); ctx.toast("$n saved"); refresh++ } catch (e: Exception) { error = e.message } finally { busy = null }
+                }
             }
         }
     }
@@ -118,9 +124,12 @@ fun SecretsScreen(repoId: String, onBack: () -> Unit, openKeys: () -> Unit) {
             text = { Text("Builds that use it will fail until it's set again.") },
             confirmButton = {
                 TextButton(onClick = {
-                    deleting = null; busy = "Deleting $name…"
-                    scope.launch {
-                        try { app.secrets.delete(repo, name); refresh++ } catch (e: Exception) { error = e.message } finally { busy = null }
+                    deleting = null
+                    Guard.sensitive(ctx, "Delete secret $name") {
+                        busy = "Deleting $name…"
+                        scope.launch {
+                            try { app.secrets.delete(repo, name); refresh++ } catch (e: Exception) { error = e.message } finally { busy = null }
+                        }
                     }
                 }) { Text("Delete", color = Stellar.Red) }
             },
@@ -130,8 +139,8 @@ fun SecretsScreen(repoId: String, onBack: () -> Unit, openKeys: () -> Unit) {
     if (applying) {
         ApplyKeyDialog(keys, app.secrets.signingMapping(overview), onDismiss = { applying = false }) { key, mapping ->
             applying = false
-            busy = "Applying ${key.label}…"
-            scope.launch {
+            Guard.sensitive(ctx, "Apply ${key.label} to ${repo.name}") { scope.launch {
+                busy = "Applying ${key.label}…"
                 try {
                     for ((name, role) in mapping) {
                         val v = app.secrets.valueFor(role, key) ?: continue
@@ -141,7 +150,7 @@ fun SecretsScreen(repoId: String, onBack: () -> Unit, openKeys: () -> Unit) {
                     ctx.toast("Signing key applied to ${repo.name}")
                     refresh++
                 } catch (e: Exception) { error = e.message } finally { busy = null }
-            }
+            } }
         }
     }
 }

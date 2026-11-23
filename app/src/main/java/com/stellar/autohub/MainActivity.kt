@@ -5,11 +5,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -19,11 +22,13 @@ import com.stellar.autohub.ui.*
 import com.stellar.autohub.ui.theme.StellarTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val vm: AppViewModel by viewModels()
 
     /** Deep link from a notification: repo id + optional run id. */
     private val openTarget = MutableStateFlow<Pair<String, Long>?>(null)
+
+    private val locked = MutableStateFlow(false)
 
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
@@ -32,13 +37,19 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         handle(intent)
         val app = application as AutoHubApp
+        locked.value = app.prefs.appLock && !app.unlocked
 
         setContent {
             StellarTheme {
                 val nav = rememberNavController()
-                var signedIn by remember { mutableStateOf(app.token() != null) }
+                var signedIn by remember { mutableStateOf(app.hasToken()) }
                 val target by openTarget.collectAsState()
                 val shared by vm.sharedUris.collectAsState()
+                val isLocked by locked.collectAsState()
+
+                // Token health: a quick check on start flips authProblem if GitHub rejects the token
+                LaunchedEffect(signedIn) { if (signedIn) try { app.api.user() } catch (_: Exception) { } }
+
 
                 LaunchedEffect(target, signedIn) {
                     val t = target ?: return@LaunchedEffect
@@ -50,6 +61,7 @@ class MainActivity : ComponentActivity() {
                     if (shared.isNotEmpty() && signedIn) nav.navigate("share") { launchSingleTop = true }
                 }
 
+                Box(Modifier.fillMaxSize()) {
                 NavHost(nav, startDestination = if (signedIn) "home" else "login") {
                     composable("login") {
                         LoginScreen(onDone = {
@@ -59,6 +71,12 @@ class MainActivity : ComponentActivity() {
                     }
                     composable("home") {
                         HomeScreen(
+                            reLogin = {
+                                app.setToken(null); signedIn = false
+                                nav.navigate("login") { popUpTo(0) }
+                            },
+                            openCrashes = { nav.navigate("crashes") },
+                            openBackup = { nav.navigate("backup") },
                             openRepo = { nav.navigate("repo/$it") },
                             addRepo = { nav.navigate("addRepo") },
                             openKeys = { nav.navigate("keys") },
@@ -78,6 +96,7 @@ class MainActivity : ComponentActivity() {
                             openPreview = { nav.navigate("preview/$id") },
                             openRun = { run -> nav.navigate("run/$id/$run") },
                             openSecrets = { nav.navigate("secrets/$id") },
+                            openCleanup = { nav.navigate("cleanup/$id") },
                         )
                     }
                     composable("preview/{id}") { e ->
@@ -111,8 +130,14 @@ class MainActivity : ComponentActivity() {
                             onBack = { nav.popBackStack() }, openKeys = { nav.navigate("keys") })
                     }
                     composable("keys") { KeysScreen(onBack = { nav.popBackStack() }) }
+                    composable("crashes") { CrashScreen(onBack = { nav.popBackStack() }) }
+                    composable("backup") { BackupScreen(onBack = { nav.popBackStack() }) }
+                    composable("cleanup/{id}") { e ->
+                        CleanupScreen(repoId = e.arguments?.getString("id") ?: return@composable, onBack = { nav.popBackStack() })
+                    }
                     composable("settings") {
-                        SettingsScreen(onBack = { nav.popBackStack() }, onSignedOut = {
+                        SettingsScreen(onBack = { nav.popBackStack() }, openCrashes = { nav.navigate("crashes") },
+                            openBackup = { nav.navigate("backup") }, onSignedOut = {
                             signedIn = false
                             nav.navigate("login") { popUpTo(0) }
                         })
@@ -127,8 +152,25 @@ class MainActivity : ComponentActivity() {
                             addRepo = { nav.navigate("addRepo") })
                     }
                 }
+                if (isLocked) LockScreen(onUnlocked = { app.unlocked = true; locked.value = false })
+                }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val app = application as AutoHubApp
+        val away = System.currentTimeMillis() - app.backgroundedAt
+        if (app.prefs.appLock && app.backgroundedAt > 0 && away > app.prefs.lockAfterSec * 1000L) {
+            app.unlocked = false
+            locked.value = true
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        (application as AutoHubApp).backgroundedAt = System.currentTimeMillis()
     }
 
     override fun onNewIntent(intent: Intent) {

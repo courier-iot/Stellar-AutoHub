@@ -52,6 +52,8 @@ fun LoginScreen(onDone: () -> Unit) {
             Text("AutoHub needs access to your repos (code + workflows + secrets) to upload, build and manage them.", color = Stellar.Dim)
 
             error?.let { ErrorBox(it) }
+            val online by app.online.collectAsState()
+            if (!online) InfoBox("No internet connection right now. AutoHub will reconnect automatically.")
 
             Panel(accent = Stellar.Cyan) {
                 Label("Sign in with a code")
@@ -75,7 +77,11 @@ fun LoginScreen(onDone: () -> Unit) {
                                     val until = System.currentTimeMillis() + dc.expires_in * 1000L
                                     while (System.currentTimeMillis() < until) {
                                         delay(interval * 1000L)
-                                        val t = app.api.pollDeviceToken(clientId, dc.device_code)
+                                        val t = try {
+                                            app.api.pollDeviceToken(clientId, dc.device_code)
+                                        } catch (e: java.io.IOException) {
+                                            continue // connection blip (e.g. VPN switch): keep waiting for approval
+                                        }
                                         when {
                                             t.access_token != null -> { finish(t.access_token); return@launch }
                                             t.error == "authorization_pending" -> {}
@@ -92,6 +98,7 @@ fun LoginScreen(onDone: () -> Unit) {
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("Sign in with GitHub") }
+                    if (busy) Busy("Contacting GitHub…")
                     TextButton(onClick = { showHelp = !showHelp }) { Text(if (showHelp) "Hide setup steps" else "Where do I get a Client ID?") }
                     if (showHelp) {
                         Text(

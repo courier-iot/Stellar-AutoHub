@@ -16,6 +16,8 @@ class PlannedDelete(val path: String, val mode: String, val protected: Boolean)
 
 class Skipped(val path: String, val reason: String)
 
+fun Leak.key() = "$path:$line:$kind"
+
 class Plan(
     val files: List<PlannedFile>,
     /** Repo files missing from the upload. Only removed in MIRROR mode, and only the selected ones. */
@@ -29,7 +31,16 @@ class Plan(
     val warnings: List<String>,
     val remoteHead: String?,
     val remoteTreeSha: String?,
+    val leaks: List<Leak> = emptyList(),
+    /** Path of the gradle file holding versionName (repo path, after strip). */
+    val gradlePath: String? = null,
 ) {
+    /** Same plan without some files (e.g. ones the user excluded after a secret warning). */
+    fun excluding(paths: Set<String>): Plan = if (paths.isEmpty()) this else Plan(
+        files.filter { it.path !in paths }, deletable, skipped, strippedRoot, canStrip, looksLikeProject, version,
+        applicationId, warnings, remoteHead, remoteTreeSha, leaks.filter { it.path !in paths }, gradlePath,
+    )
+
     val added get() = files.count { it.status == FileStatus.ADDED }
     val changed get() = files.count { it.status == FileStatus.CHANGED }
     val unchanged get() = files.count { it.status == FileStatus.UNCHANGED }
@@ -151,6 +162,8 @@ object Planner {
             warnings = warnings,
             remoteHead = remote.head,
             remoteTreeSha = remote.treeSha,
+            leaks = LeakScanner.scan(planned),
+            gradlePath = PathRules.GRADLE_FILES.firstOrNull { byPath.containsKey(it) },
         )
     }
 }

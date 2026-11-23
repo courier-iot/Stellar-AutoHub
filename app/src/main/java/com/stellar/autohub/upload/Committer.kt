@@ -138,4 +138,27 @@ class Committer(private val api: GitHubApi) {
         }
         return commitSha
     }
+
+    /**
+     * Undo: a NEW commit whose files are exactly the parent of [target]. History is never rewritten.
+     * If newer commits exist after [target], they get rolled back too, so the caller asks first.
+     */
+    suspend fun revertTo(repo: RepoProfile, target: String, message: String): String {
+        val head = api.branchHead(repo.owner, repo.name, repo.branch)
+            ?: throw IllegalStateException("The branch doesn't exist anymore.")
+        val c = api.commit(repo.owner, repo.name, target)
+        val parent = c.parents.firstOrNull()?.sha
+            ?: throw IllegalStateException("That was the repo's first commit, so there's no earlier version to go back to.")
+        val tree = api.commit(repo.owner, repo.name, parent).tree.sha
+        val sha = api.createCommit(repo.owner, repo.name, message, tree, head)
+        api.updateRef(repo.owner, repo.name, repo.branch, sha)
+        return sha
+    }
+
+    /** Commits on the branch after [target] (0 = it's the latest). */
+    suspend fun newerCommits(repo: RepoProfile, target: String): Int {
+        val head = api.branchHead(repo.owner, repo.name, repo.branch) ?: return 0
+        if (head == target) return 0
+        return api.compare(repo.owner, repo.name, target, head).ahead_by
+    }
 }

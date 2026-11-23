@@ -98,6 +98,14 @@ class KeyVault(context: Context) {
 
     fun remove(id: String) = save(_keys.value.filterNot { it.id == id })
 
+    /** Adds keys from a backup, skipping ones already here. Returns how many were added. */
+    fun restore(list: List<SigningKey>): Int {
+        val have = _keys.value
+        val fresh = list.filter { k -> have.none { it.id == k.id || it.keystoreBase64 == k.keystoreBase64 } }
+        if (fresh.isNotEmpty()) save(have + fresh)
+        return fresh.size
+    }
+
     fun keystoreBytes(k: SigningKey): ByteArray = Base64.decode(k.keystoreBase64, Base64.NO_WRAP)
 
     /** Creates a new RSA-2048 key with a 30-year self-signed certificate. */

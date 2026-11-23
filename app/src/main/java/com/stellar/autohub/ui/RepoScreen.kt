@@ -19,7 +19,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.stellar.autohub.AutoHubApp
 import com.stellar.autohub.data.GhRun
+import com.stellar.autohub.ci.BuildWatcher
+import com.stellar.autohub.ci.HealthReport
+import com.stellar.autohub.ci.WorkflowHealth
+import com.stellar.autohub.data.HistoryEntry
 import com.stellar.autohub.secrets.SecretsOverview
+import com.stellar.autohub.security.Guard
+import com.stellar.autohub.upload.UploadQueue
 import com.stellar.autohub.ui.theme.Stellar
 import kotlinx.coroutines.launch
 
@@ -31,6 +37,7 @@ fun RepoScreen(
     openPreview: () -> Unit,
     openRun: (Long) -> Unit,
     openSecrets: () -> Unit,
+    openCleanup: () -> Unit,
 ) {
     val app = AutoHubApp.instance
     val ctx = LocalContext.current
@@ -51,6 +58,12 @@ fun RepoScreen(
     var menu by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
+    var health by remember { mutableStateOf<HealthReport?>(null) }
+    var healthBusy by remember { mutableStateOf(false) }
+    var undoTarget by remember { mutableStateOf<Pair<HistoryEntry, Int>?>(null) }
+    var undoBusy by remember { mutableStateOf<String?>(null) }
+    val queue by UploadQueue.items.collectAsState()
+    val myQueue = queue.filter { it.repoId == repoId }
 
     LaunchedEffect(repoId, refresh) {
         runsError = null
@@ -73,6 +86,7 @@ fun RepoScreen(
             IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("Secrets") }, onClick = { menu = false; openSecrets() })
+                DropdownMenuItem(text = { Text("Clean up GitHub storage") }, onClick = { menu = false; openCleanup() })
                 DropdownMenuItem(text = { Text("Repo settings") }, onClick = { menu = false; editing = true })
                 DropdownMenuItem(text = { Text("Open on GitHub") }, onClick = {
                     menu = false
@@ -112,7 +126,66 @@ fun RepoScreen(
                 }
             }
 
+            if (myQueue.isNotEmpty()) {
+                Panel(accent = Stellar.Amber) {
+                    Label("Queued uploads", Stellar.Amber)
+                    myQueue.forEach { q ->
+                        Column(Modifier.padding(vertical = 4.dp)) {
+                            Text(q.message.lineSequence().first(), maxLines = 1)
+                            Text(
+                                when (q.status) {
+                                    "needs_review" -> "Needs review: ${q.error ?: "possible secret"}"
+                                    "failed" -> "Failed: ${q.error ?: "?"}"
+                                    else -> "Waiting for a connection · ${ago(q.created)}" + (q.error?.let { " · last try: $it" } ?: "")
+                                },
+                                color = if (q.status == "waiting") Stellar.Dim else Stellar.Amber, style = MaterialTheme.typography.bodySmall,
+                            )
+                            Row {
+                                TextButton(onClick = { vm.reviewQueued(q, onReady = openPreview, onError = { ctx.toast(it) }) }) { Text("Review") }
+                                if (q.status != "needs_review") TextButton(onClick = {
+                                    UploadQueue.save(ctx, q.copy(status = "waiting", error = null)); UploadQueue.schedule(ctx)
+                                    ctx.toast("Will send as soon as you're online")
+                                }) { Text("Send now") }
+                                TextButton(onClick = { UploadQueue.remove(ctx, q.id) }) { Text("Remove", color = Stellar.Red) }
+                            }
+                        }
+                    }
+                }
+            }
+
             InstallPanel(repo, refreshKey = refresh)
+
+            Panel {
+                Label("Workflow health")
+                val h = health
+                when {
+                    healthBusy -> Busy("Checking workflows and action versions…")
+                    h == null -> {
+                        Text("Finds outdated actions, removed commands and GitHub deprecation warnings before they break builds.", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            healthBusy = true
+                            scope.launch {
+                                try { health = WorkflowHealth.check(app.api, repo) } catch (e: Exception) { ctx.toast(e.message ?: "Check failed") } finally { healthBusy = false }
+                            }
+                        }) { Text("Check now") }
+                    }
+                    h.issues.isEmpty() -> Text("All good ✓ (${h.texts.size} workflow file(s), ${h.actionsChecked} action(s) checked)", color = Stellar.Green)
+                    else -> {
+                        h.issues.forEach { i ->
+                            Column(Modifier.padding(vertical = 3.dp)) {
+                                Text(i.message, color = if (i.severity == "warn") Stellar.Amber else Stellar.Text, style = MaterialTheme.typography.bodySmall)
+                                MonoText("${i.file}${if (i.line > 0) ":${i.line}" else ""}", Stellar.Dim)
+                            }
+                        }
+                        Row {
+                            if (h.fixable.isNotEmpty()) Button(onClick = {
+                                h.fixPayload()?.let { vm.setPayload(it); openPreview() }
+                            }) { Text("Fix ${h.fixable.size} automatically") }
+                            TextButton(onClick = { health = null }) { Text("Close") }
+                        }
+                    }
+                }
+            }
 
             Panel {
                 Label("Recent builds")
@@ -140,6 +213,7 @@ fun RepoScreen(
             if (history.isNotEmpty()) {
                 Panel {
                     Label("AutoHub uploads")
+                    undoBusy?.let { Busy(it) }
                     history.take(15).forEach { h ->
                         Row(
                             Modifier.fillMaxWidth().clickable(enabled = h.runId > 0) { openRun(h.runId) }.padding(vertical = 8.dp),
@@ -153,12 +227,57 @@ fun RepoScreen(
                                 )
                             }
                             Chip(statusText(h.status), statusColor(h.status))
+                            TextButton(enabled = undoBusy == null, onClick = {
+                                undoBusy = "Checking…"
+                                scope.launch {
+                                    try { undoTarget = h to app.committer.newerCommits(repo, h.commitSha) }
+                                    catch (e: Exception) { ctx.toast(e.message ?: "Couldn't check the branch") }
+                                    finally { undoBusy = null }
+                                }
+                            }) { Text("Undo", color = Stellar.Dim) }
                         }
                     }
                 }
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+
+    undoTarget?.let { (h, newer) ->
+        AlertDialog(
+            onDismissRequest = { undoTarget = null },
+            title = { Text("Undo this upload?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("\"${h.message.lineSequence().first()}\" (${h.commitSha.take(7)})")
+                    Text("AutoHub makes a new commit that puts every file back exactly how it was before this upload. History isn't rewritten, so this can be undone too.", color = Stellar.Dim)
+                    if (newer > 0) Text("$newer newer commit(s) came after it. Those changes would be rolled back as well.", color = Stellar.Red)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    undoTarget = null
+                    Guard.sensitive(ctx, "Undo upload on ${repo.name}") {
+                        undoBusy = "Undoing…"
+                        scope.launch {
+                            try {
+                                val msg = "Undo: ${h.message.lineSequence().first()}"
+                                val sha = app.committer.revertTo(repo, h.commitSha, msg)
+                                val entry = HistoryEntry(
+                                    id = java.util.UUID.randomUUID().toString(), repoId = repo.id, time = System.currentTimeMillis(),
+                                    message = msg, commitSha = sha, status = if (app.prefs.watchBuilds) "queued" else "none",
+                                )
+                                app.store.addHistory(entry)
+                                if (app.prefs.watchBuilds) BuildWatcher.start(app, repo.id, repo.fullName, sha, entry.id)
+                                ctx.toast("Undone. A new build is starting.")
+                                refresh++
+                            } catch (e: Exception) { ctx.toast(e.message ?: "Undo failed") } finally { undoBusy = null }
+                        }
+                    }
+                }) { Text(if (newer > 0) "Roll back anyway" else "Undo", color = Stellar.Red) }
+            },
+            dismissButton = { TextButton(onClick = { undoTarget = null }) { Text("Cancel") } },
+        )
     }
 
     if (editing) RepoSettingsDialog(repo, onDismiss = { editing = false }, onSave = { app.store.upsertRepo(it); editing = false; refresh++ })
