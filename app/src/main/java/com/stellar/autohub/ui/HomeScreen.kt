@@ -25,6 +25,7 @@ fun HomeScreen(
     addRepo: () -> Unit,
     openKeys: () -> Unit,
     openSettings: () -> Unit,
+    newProject: () -> Unit = {},
 ) {
     val app = AutoHubApp.instance
     val data by app.store.data.collectAsState()
@@ -37,6 +38,7 @@ fun HomeScreen(
     Screen(
         title = "Stellar AutoHub",
         actions = {
+            TextButton(onClick = newProject) { Text("+ New app") }
             IconButton(onClick = openKeys) { Icon(Icons.Default.Lock, "Signing keys") }
             IconButton(onClick = openSettings) { Icon(Icons.Default.Settings, "Settings") }
         },
@@ -59,7 +61,7 @@ fun HomeScreen(
                     Text("GitHub rejected the saved token (revoked or expired). Tap to sign in again. Your repos and keys stay.", color = Stellar.Red)
                 }
             }
-            tokenWarning(app.api.tokenExpires, app.api.lastScopes)?.let { w -> item { InfoBox(w) } }
+            item { TokenBanner(reLogin) }
             if (newCrash) item {
                 Panel(Modifier.clickable { openCrashes() }, accent = Stellar.Amber) {
                     Text("AutoHub crashed last time. Tap to see the report (and copy it for Claude).", color = Stellar.Amber)
@@ -114,20 +116,42 @@ fun HomeScreen(
     }
 }
 
-/** Warns about personal access tokens that expire soon or lack the workflow scope. */
-private fun tokenWarning(expires: String?, scopes: String?): String? {
-    if (expires != null) {
-        try {
-            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", java.util.Locale.US)
-            val t = fmt.parse(expires)?.time
-            if (t != null) {
-                val days = (t - System.currentTimeMillis()) / (24L * 3600 * 1000)
-                if (days < 0) return "Your GitHub token has expired. Make a new one and sign in again."
-                if (days <= 7) return "Your GitHub token expires in $days day(s). Make a new one before it stops working."
-            }
-        } catch (_: Exception) { }
+/** Parses GitHub's token-expiry header, e.g. "2026-11-23 02:40:00 UTC". */
+fun parseTokenExpiry(v: String): Long? {
+    for (p in listOf("yyyy-MM-dd HH:mm:ss z", "yyyy-MM-dd HH:mm:ss Z", "yyyy-MM-dd HH:mm z", "yyyy-MM-dd'T'HH:mm:ssX")) {
+        try { java.text.SimpleDateFormat(p, java.util.Locale.US).parse(v.trim())?.let { return it.time } } catch (_: Exception) { }
     }
-    if (scopes != null && scopes.isNotBlank() && !scopes.contains("workflow"))
-        return "Your token is missing the 'workflow' scope. Uploads that change .github/workflows will be rejected."
     return null
+}
+
+/** Warns about a personal access token that expires soon (with the exact time) or lacks the workflow scope. */
+@Composable
+private fun TokenBanner(reLogin: () -> Unit) {
+    val app = AutoHubApp.instance
+    var dismissed by remember { mutableStateOf(app.prefs.tokenWarnDismissed) }
+    val expires = app.api.tokenExpires
+    val scopes = app.api.lastScopes
+    val t = expires?.let { parseTokenExpiry(it) }
+    val left = t?.let { it - System.currentTimeMillis() }
+    val renews = remember { app.autoRenews() }
+    val text = when {
+        renews -> null
+        left != null && left <= 0 -> "Your GitHub token has expired. Sign in again."
+        left != null && left <= 7L * 24 * 3600 * 1000 && dismissed != expires -> {
+            val whenText = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(t!!))
+            val inText = if (left < 24L * 3600 * 1000) "in ${left / 3_600_000}h ${(left / 60_000) % 60}m" else "in ${left / 86_400_000} day(s)"
+            "Your GitHub sign-in expires $inText ($whenText). Sign in again with the code once, " +
+                "and AutoHub will renew it automatically from then on."
+        }
+        scopes != null && scopes.isNotBlank() && !scopes.contains("workflow") ->
+            "Your token is missing the 'workflow' scope. Uploads that change .github/workflows will be rejected."
+        else -> null
+    } ?: return
+    Panel(accent = Stellar.Amber) {
+        Text(text, color = Stellar.Amber)
+        Row {
+            TextButton(onClick = reLogin) { Text("Sign in again") }
+            if (left != null && left > 0) TextButton(onClick = { app.prefs.tokenWarnDismissed = expires; dismissed = expires }) { Text("Hide", color = Stellar.Dim) }
+        }
+    }
 }

@@ -8,6 +8,7 @@ import java.io.File
 
 /** Saved repos + upload history, persisted as one small JSON file. */
 class Store(context: Context) {
+    private val appCtx = context.applicationContext
     private val file = File(context.filesDir, "store.json")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val _data = MutableStateFlow(load())
@@ -26,6 +27,7 @@ class Store(context: Context) {
         val tmp = File(file.parentFile, "store.json.tmp")
         tmp.writeText(json.encodeToString(StoreData.serializer(), next))
         tmp.renameTo(file)
+        com.stellar.autohub.widget.BuildWidget.refresh(appCtx, next)
     }
 
     fun repo(id: String): RepoProfile? = _data.value.repos.find { it.id == id }

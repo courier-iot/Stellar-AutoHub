@@ -45,7 +45,7 @@ fun SettingsScreen(onBack: () -> Unit, openCrashes: () -> Unit, openBackup: () -
             Panel {
                 Label("Account")
                 Text("Signed in as ${app.prefs.login.ifBlank { "?" }}")
-                app.api.tokenExpires?.let { Text("Token expires: $it", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall) }
+                app.api.tokenExpires?.let { Text("Token expires: $it" + (com.stellar.autohub.ui.parseTokenExpiry(it)?.let { t -> " (" + java.text.DateFormat.getDateTimeInstance().format(java.util.Date(t)) + " your time)" } ?: ""), color = Stellar.Dim, style = MaterialTheme.typography.bodySmall) }
                 app.api.lastScopes?.takeIf { it.isNotBlank() }?.let {
                     Text("Token scopes: $it", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
                     if (!it.contains("workflow")) Text("Missing 'workflow' scope: uploads that change .github/workflows will be rejected.", color = Stellar.Amber, style = MaterialTheme.typography.bodySmall)
@@ -53,6 +53,25 @@ fun SettingsScreen(onBack: () -> Unit, openCrashes: () -> Unit, openBackup: () -
                 Spacer(Modifier.height(6.dp))
                 OutlinedTextField(clientId, { clientId = it.trim() }, label = { Text("OAuth Client ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 TextButton(onClick = { confirmOut = true }) { Text("Sign out", color = Stellar.Red) }
+            }
+
+            Panel(accent = Stellar.Cyan) {
+                Label("Display")
+                var scale by remember { mutableFloatStateOf(app.prefs.textScale) }
+                var contrast by remember { mutableStateOf(app.prefs.highContrast) }
+                var black by remember { mutableStateOf(app.prefs.pureBlack) }
+                var accent by remember { mutableStateOf(app.prefs.accent) }
+                Text("Text size: ${(scale * 100).toInt()}%")
+                Slider(scale, { scale = it; app.prefs.textScale = it; app.applyDisplay() }, valueRange = 0.85f..1.4f, steps = 10)
+                Toggle("High contrast", "Brighter text and borders.", contrast) { contrast = it; app.prefs.highContrast = it; app.applyDisplay() }
+                Toggle("Pure black", "True black background (saves battery on OLED screens).", black) { black = it; app.prefs.pureBlack = it; app.applyDisplay() }
+                Text("Accent color", color = Stellar.Dim)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    com.stellar.autohub.ui.theme.Stellar.accents.forEach { (name, c) ->
+                        FilterChip(selected = accent == name, onClick = { accent = name; app.prefs.accent = name; app.applyDisplay() },
+                            label = { Text("●", color = c) })
+                    }
+                }
             }
 
             Panel(accent = Stellar.Violet) {
@@ -97,8 +116,8 @@ fun SettingsScreen(onBack: () -> Unit, openCrashes: () -> Unit, openBackup: () -
             Panel {
                 Label("Maintenance")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Downloaded APKs & shared logs: ${com.stellar.autohub.ci.Cleanup.size(cache)}", modifier = Modifier.weight(1f))
-                    TextButton(onClick = { app.clearCache(); cache = app.cacheBytes() }) { Text("Clear") }
+                    Text("Downloads, logs & file cache: ${com.stellar.autohub.ci.Cleanup.size(cache + app.blobs.size())}", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { app.clearCache(); app.blobs.clear(); cache = app.cacheBytes() }) { Text("Clear") }
                 }
                 Text("Cleared automatically after installs and when older than a day.", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = openCrashes) { Text("Crash logs (${app.crashes().size}) →") }

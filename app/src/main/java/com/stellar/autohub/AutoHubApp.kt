@@ -11,6 +11,7 @@ import com.stellar.autohub.secrets.KeyVault
 import com.stellar.autohub.secrets.SecretsManager
 import com.stellar.autohub.upload.Committer
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 class AutoHubApp : Application() {
@@ -21,8 +22,13 @@ class AutoHubApp : Application() {
     lateinit var committer: Committer
     lateinit var vault: KeyVault
     lateinit var secrets: SecretsManager
+    lateinit var blobs: com.stellar.autohub.editor.BlobCache
 
     @Volatile private var cachedToken: String? = null
+    private val refreshLock = kotlinx.coroutines.sync.Mutex()
+
+    /** True when the sign-in renews itself (expiring OAuth token with a refresh token). */
+    fun autoRenews(): Boolean = secure.extra("refresh") != null
 
     /** Set when GitHub says the token no longer works. */
     val authProblem = MutableStateFlow(false)
@@ -62,9 +68,12 @@ class AutoHubApp : Application() {
         } catch (_: Exception) { }
     }
 
-    fun setToken(t: String?) {
+    /** Saves the sign-in. [refresh]/[expiresInSec] come with expiring OAuth tokens. */
+    fun setToken(t: String?, refresh: String? = null, expiresInSec: Long? = null) {
         cachedToken = t
         authProblem.value = false
+        secure.saveExtra("refresh", if (t == null) null else refresh)
+        secure.saveExtra("expires_at", if (t == null || expiresInSec == null) null else (System.currentTimeMillis() + expiresInSec * 1000).toString())
         if (t == null) secure.clear() else secure.saveToken(t)
     }
 
@@ -72,12 +81,35 @@ class AutoHubApp : Application() {
         super.onCreate()
         instance = this
         prefs = Prefs(this)
+        applyDisplay()
         secure = SecureStore(this)
         store = Store(this)
         installCrashHandler()
         api = GitHubApi({ token() }, onUnauthorized = { authProblem.value = true })
+        api.hooks = object : GitHubApi.TokenHooks {
+            override fun canRefresh() = secure.extra("refresh") != null && prefs.clientId.isNotBlank()
+            override fun needsRefresh(): Boolean {
+                val at = secure.extra("expires_at")?.toLongOrNull() ?: return false
+                return canRefresh() && at - System.currentTimeMillis() < 15 * 60_000L
+            }
+            override suspend fun refresh(): Boolean = refreshLock.withLock {
+                // Another request may have refreshed while we waited
+                val at = secure.extra("expires_at")?.toLongOrNull()
+                if (at != null && at - System.currentTimeMillis() > 15 * 60_000L) return@withLock true
+                val rt = secure.extra("refresh") ?: return@withLock false
+                try {
+                    val t = api.refreshUserToken(prefs.clientId, rt)
+                    val access = t.access_token ?: return@withLock false
+                    setToken(access, t.refresh_token ?: rt, t.expires_in)
+                    true
+                } catch (e: Exception) { false }
+            }
+        }
         committer = Committer(api)
         watchNetwork()
+        blobs = com.stellar.autohub.editor.BlobCache(this, api)
+        com.stellar.autohub.editor.Drafts.load(this)
+        installValidators()
         vault = KeyVault(this)
         secrets = SecretsManager(api)
         Thread {
@@ -95,6 +127,36 @@ class AutoHubApp : Application() {
             NotificationChannel(CH_RESULT, "Build results", NotificationManager.IMPORTANCE_HIGH)
         )
     }
+
+    private fun installValidators() {
+        com.stellar.autohub.editor.Checks.yamlValidator = { text ->
+            try {
+                val yaml = org.yaml.snakeyaml.Yaml(org.yaml.snakeyaml.constructor.SafeConstructor(org.yaml.snakeyaml.LoaderOptions()))
+                yaml.composeAll(java.io.StringReader(text)).forEach { _ -> }
+                null
+            } catch (e: org.yaml.snakeyaml.error.MarkedYAMLException) {
+                ((e.problemMark?.line ?: 0) + 1) to (e.problem ?: e.message ?: "invalid")
+            } catch (e: Exception) {
+                1 to (e.message ?: "invalid")
+            }
+        }
+        com.stellar.autohub.editor.Checks.xmlValidator = { text ->
+            try {
+                val b = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder()
+                b.setErrorHandler(null)
+                b.parse(org.xml.sax.InputSource(java.io.StringReader(text)))
+                null
+            } catch (e: org.xml.sax.SAXParseException) {
+                e.lineNumber.coerceAtLeast(1) to (e.message ?: "invalid")
+            } catch (e: Exception) {
+                1 to (e.message ?: "invalid")
+            }
+        }
+    }
+
+    fun applyDisplay() = com.stellar.autohub.ui.theme.Stellar.apply(
+        prefs.textScale, prefs.highContrast, prefs.pureBlack, prefs.accent,
+    )
 
     // ---------- Crash log ----------
 

@@ -113,6 +113,7 @@ class BuildWatcher(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     }
 
     private fun notifyResult(title: String, head: String, body: String, repoId: String, runId: Long, ok: Boolean) {
+        if (app.store.repo(repoId)?.muted == true) return
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return

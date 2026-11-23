@@ -50,7 +50,8 @@ object UploadQueue {
     fun add(ctx: Context, payload: Payload, meta: QueuedUpload): QueuedUpload {
         val m = meta.copy(id = meta.id.ifEmpty { UUID.randomUUID().toString() })
         val dir = File(root(ctx), m.id).apply { mkdirs() }
-        ZipOutputStream(File(dir, "payload.zip").outputStream().buffered()).use { z ->
+        if (payload.files.isEmpty()) File(dir, "payload.zip").writeBytes(ByteArray(0))
+        else ZipOutputStream(File(dir, "payload.zip").outputStream().buffered()).use { z ->
             for (f in payload.files.associateBy { it.path }.values) {
                 z.putNextEntry(ZipEntry(f.path)); z.write(f.bytes); z.closeEntry()
             }
@@ -73,7 +74,8 @@ object UploadQueue {
 
     fun payload(ctx: Context, m: QueuedUpload): Payload {
         val bytes = File(File(root(ctx), m.id), "payload.zip").readBytes()
-        return Payload(PayloadReader.readZip(bytes), m.label, m.structured)
+        val files = if (bytes.size > 22) PayloadReader.readZip(bytes) else emptyList()
+        return Payload(files, m.label, m.structured, m.requestedDeletes, m.origin)
     }
 
     fun schedule(ctx: Context) {
@@ -110,8 +112,8 @@ class QueueWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
                     notify(m, "Upload needs a look", "Possible ${unreviewed.first().kind.lowercase()} in ${unreviewed.first().path}. Open AutoHub to review it.")
                     continue
                 }
-                val deletes = if (m.reviewed && m.mode == "MIRROR")
-                    m.deletes.toSet().intersect(plan.deletable.map { it.path }.toSet()) else emptySet()
+                val deletes = (if (m.reviewed && m.mode == "MIRROR")
+                    m.deletes.toSet().intersect(plan.deletable.map { it.path }.toSet()) else emptySet()) + plan.requestedDeletes
                 if (plan.added + plan.changed + deletes.size == 0) {
                     UploadQueue.remove(app, m.id)
                     notify(m, "Queued upload skipped", "Nothing changed compared to the repo anymore.")
@@ -126,6 +128,7 @@ class QueueWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
                 )
                 app.store.addHistory(entry)
                 UploadQueue.remove(app, m.id)
+                if (m.origin == "drafts") com.stellar.autohub.editor.Drafts.clear(app, repo.id, repo.branch, plan.files.map { it.path }.toSet() + deletes)
                 if (app.prefs.watchBuilds) BuildWatcher.start(app, repo.id, repo.fullName, sha, entry.id)
                 notify(m, "Queued upload sent ✓", "${repo.fullName}: ${m.message.lineSequence().first()}")
             } catch (e: GitHubException) {

@@ -17,6 +17,10 @@ class Payload(
     val label: String,
     /** True when it came from a zip or folder (likely a whole project), false for loose files. */
     val structured: Boolean,
+    /** Repo paths to delete even in patch mode (deleted in the editor / file browser). */
+    val deletes: List<String> = emptyList(),
+    /** "drafts" when built from editor drafts (they're cleared after a successful commit). */
+    val origin: String = "",
 )
 
 object PayloadReader {

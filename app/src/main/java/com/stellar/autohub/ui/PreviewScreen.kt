@@ -18,10 +18,17 @@ import com.stellar.autohub.upload.UploadMode
 import com.stellar.autohub.upload.key
 import com.stellar.autohub.ui.theme.Stellar
 
-private enum class Section { ADDED, CHANGED, DELETED, UNCHANGED, SKIPPED }
+private enum class Section { ADDED, CHANGED, REQUESTED, DELETED, UNCHANGED, SKIPPED }
 
 @Composable
-fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommitted: (String) -> Unit) {
+fun PreviewScreen(
+    repoId: String,
+    vm: AppViewModel,
+    onBack: () -> Unit,
+    onCommitted: (String) -> Unit,
+    openEditor: (String) -> Unit = {},
+    openDiff: () -> Unit = {},
+) {
     val app = AutoHubApp.instance
     val ctx = LocalContext.current
     val repo = app.store.repo(repoId)
@@ -33,7 +40,9 @@ fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommit
     }
     LaunchedEffect(st?.doneHistoryId) { st?.doneHistoryId?.let(onCommitted) }
 
-    var open by remember { mutableStateOf(setOf(Section.ADDED, Section.CHANGED, Section.DELETED)) }
+    var open by remember { mutableStateOf(setOf(Section.ADDED, Section.CHANGED, Section.REQUESTED, Section.DELETED)) }
+    var ignoreChecks by remember { mutableStateOf(false) }
+    var fileAction by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     fun toggle(s: Section) { open = if (s in open) open - s else open + s }
 
     Screen(title = "Review upload", onBack = if (st?.committing == true) null else onBack) { pad ->
@@ -72,7 +81,7 @@ fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommit
             return@Screen
         }
         val mirror = s.mode == UploadMode.MIRROR
-        val deleteCount = if (mirror) s.selectedDeletes.size else 0
+        val deleteCount = (if (mirror) s.selectedDeletes.size else 0) + plan.requestedDeletes.count { !mirror || it !in s.selectedDeletes }
         val nothing = plan.added + plan.changed + deleteCount == 0
         val unresolved = s.unresolvedLeaks
         val allLeaks = s.plan?.leaks.orEmpty()
@@ -122,6 +131,21 @@ fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommit
                 }
             }
 
+            if (plan.checks.isNotEmpty()) item {
+                Panel(accent = Stellar.Red) {
+                    Label("Pre-commit checks", Stellar.Red)
+                    Text("These will very likely break the build:", color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+                    plan.checks.take(10).forEach { c ->
+                        Column(Modifier.fillMaxWidth().clickable { openEditor(c.path) }.padding(vertical = 4.dp)) {
+                            MonoText("${c.path}:${c.line}", Stellar.Cyan)
+                            Text(c.message, color = Stellar.Text, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(ignoreChecks, { ignoreChecks = it }); Text("Commit anyway", color = Stellar.Dim)
+                    }
+                }
+            }
             s.bumpTarget?.let { target ->
                 item {
                     Panel(accent = Stellar.Amber) {
@@ -185,11 +209,20 @@ fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommit
 
             if (added.isNotEmpty()) {
                 header(Section.ADDED, "New", added.size, Stellar.Green)
-                if (Section.ADDED in open) items(added, key = { "a-" + it.path }) { MonoText("+ ${it.path}", Stellar.Green) }
+                if (Section.ADDED in open) items(added, key = { "a-" + it.path }) {
+                    MonoText("+ ${it.path}", Stellar.Green, Modifier.fillMaxWidth().clickable { fileAction = it.path to false }.padding(vertical = 2.dp))
+                }
             }
             if (changed.isNotEmpty()) {
                 header(Section.CHANGED, "Changed", changed.size, Stellar.Cyan)
-                if (Section.CHANGED in open) items(changed, key = { "c-" + it.path }) { MonoText("~ ${it.path}", Stellar.Cyan) }
+                if (Section.CHANGED in open) items(changed, key = { "c-" + it.path }) {
+                    MonoText("~ ${it.path}", Stellar.Cyan, Modifier.fillMaxWidth().clickable { fileAction = it.path to true }.padding(vertical = 2.dp))
+                }
+            }
+            val requestedOnly = plan.requestedDeletes.filter { !mirror || it !in s.selectedDeletes }
+            if (requestedOnly.isNotEmpty()) {
+                header(Section.REQUESTED, "Delete (you asked)", requestedOnly.size, Stellar.Red)
+                if (Section.REQUESTED in open) items(requestedOnly, key = { "r-$it" }) { MonoText("− $it", Stellar.Red) }
             }
             if (mirror && plan.deletable.isNotEmpty()) {
                 header(Section.DELETED, "Delete", plan.deletable.size, Stellar.Red)
@@ -231,7 +264,7 @@ fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommit
                                 if (deleteCount > 0) Guard.sensitive(ctx, "Delete $deleteCount file(s) from ${repo.name}") { vm.commit() }
                                 else vm.commit()
                             },
-                            enabled = !nothing && unresolved.isEmpty(),
+                            enabled = !nothing && unresolved.isEmpty() && (plan.checks.isEmpty() || ignoreChecks),
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                         ) {
                             Text(
@@ -249,5 +282,32 @@ fun PreviewScreen(repoId: String, vm: AppViewModel, onBack: () -> Unit, onCommit
                 }
             }
         }
+    }
+
+    fileAction?.let { (path, changed) ->
+        val app2 = AutoHubApp.instance
+        val repo2 = app2.store.repo(repoId)
+        AlertDialog(
+            onDismissRequest = { fileAction = null },
+            title = { Text(path.substringAfterLast('/')) },
+            text = {
+                Column {
+                    MonoText(path, Stellar.Dim)
+                    if (changed && repo2 != null) TextButton(onClick = {
+                        fileAction = null
+                        val sha = vm.remoteSha(path)
+                        val newText = vm.payloadText(path) ?: "(binary file)"
+                        DiffHolder.setLoader("$path  (GitHub → upload)") {
+                            val old = sha?.let { app2.blobs.text(repo2, it) } ?: "(binary file)"
+                            old to newText
+                        }
+                        openDiff()
+                    }) { Text("See what changes") }
+                    if (vm.payloadText(path) != null) TextButton(onClick = { fileAction = null; openEditor(path) }) { Text("Edit before uploading") }
+                    else Text("Binary file, can't be edited here.", color = Stellar.Dim)
+                }
+            },
+            confirmButton = { TextButton(onClick = { fileAction = null }) { Text("Close") } },
+        )
     }
 }

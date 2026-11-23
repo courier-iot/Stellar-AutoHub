@@ -44,6 +44,14 @@ class GitHubApi(
     /** Scopes reported by GitHub for classic/OAuth tokens (empty for fine-grained). */
     @Volatile var lastScopes: String? = null
 
+    /** Lets the app renew expiring (8 h) OAuth tokens with their refresh token. */
+    interface TokenHooks {
+        fun needsRefresh(): Boolean
+        fun canRefresh(): Boolean
+        suspend fun refresh(): Boolean
+    }
+    @Volatile var hooks: TokenHooks? = null
+
     /** Expiry reported for personal access tokens, e.g. "2026-12-01 00:00:00 UTC". */
     @Volatile var tokenExpires: String? = null
 
@@ -58,8 +66,18 @@ class GitHubApi(
     }
 
     /** Executes with retry for secondary rate limits / transient 5xx. */
-    private suspend fun exec(request: Request): Response = withContext(Dispatchers.IO) {
+    private fun withAuth(r: Request): Request {
+        val t = tokenProvider() ?: return r
+        return r.newBuilder().header("Authorization", "Bearer $t").build()
+    }
+
+    private suspend fun exec(original: Request): Response = withContext(Dispatchers.IO) {
+        var request = original
         var attempt = 0
+        val authed = request.header("Authorization") != null && request.url.host == "api.github.com"
+        var refreshed = false
+        val h = hooks
+        if (authed && h != null && h.needsRefresh() && h.refresh()) { request = withAuth(request); refreshed = true }
         while (true) {
             val resp = try {
                 http.newCall(request).execute()
@@ -75,7 +93,16 @@ class GitHubApi(
             resp.header("X-OAuth-Scopes")?.let { lastScopes = it }
             resp.header("GitHub-Authentication-Token-Expiration")?.let { tokenExpires = it }
             val code = resp.code
-            if (code == 401 && request.url.host == "api.github.com" && request.header("Authorization") != null) onUnauthorized()
+            if (code == 401 && authed) {
+                if (!refreshed && h != null && h.canRefresh()) {
+                    resp.close()
+                    refreshed = true
+                    if (h.refresh()) { request = withAuth(request); continue }
+                    onUnauthorized()
+                    return@withContext exec2(request)
+                }
+                onUnauthorized()
+            }
             val limited = code == 429 || (code == 403 && (resp.header("Retry-After") != null ||
                 resp.header("X-RateLimit-Remaining") == "0"))
             if ((limited || code in 502..504) && attempt < 5) {
@@ -92,6 +119,19 @@ class GitHubApi(
         }
         @Suppress("UNREACHABLE_CODE")
         throw IllegalStateException("unreachable")
+    }
+
+    /** One plain attempt (used after a failed token refresh, to return GitHub's real 401). */
+    private fun exec2(r: Request): Response = http.newCall(r).execute()
+
+    /** Renews an expiring OAuth token. Device-flow tokens don't need the client secret for this. */
+    suspend fun refreshUserToken(clientId: String, refreshToken: String): DeviceToken {
+        val r = Request.Builder().url("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .post(FormBody.Builder().add("client_id", clientId).add("grant_type", "refresh_token")
+                .add("refresh_token", refreshToken).build())
+            .build()
+        return json.decodeFromString(DeviceToken.serializer(), text(r))
     }
 
     /** Drops pooled connections, which may be tied to a network that just went away. */
@@ -358,6 +398,96 @@ class GitHubApi(
     suspend fun deleteArtifact(owner: String, name: String, id: Long) = delete("/repos/$owner/$name/actions/artifacts/$id")
     suspend fun deleteRelease(owner: String, name: String, id: Long) = delete("/repos/$owner/$name/releases/$id")
     suspend fun deleteTag(owner: String, name: String, tag: String) = delete("/repos/$owner/$name/git/refs/tags/${enc(tag)}")
+
+    // ---------------- Developer tools ----------------
+
+    suspend fun blob(owner: String, name: String, sha: String): ByteArray {
+        val b = get("/repos/$owner/$name/git/blobs/$sha", GhBlob.serializer())
+        return java.util.Base64.getMimeDecoder().decode(b.content)
+    }
+
+    /** Raw file bytes at any ref (branch, tag or commit sha), or null if missing. */
+    suspend fun rawBytes(owner: String, name: String, path: String, ref: String): ByteArray? = withContext(Dispatchers.IO) {
+        exec(req("/repos/$owner/$name/contents/${enc(path)}?ref=${enc(ref)}", "application/vnd.github.raw+json").get().build()).use { r ->
+            when {
+                r.code == 404 -> null
+                !r.isSuccessful -> throw GitHubException(r.code, errorMessage(r.code, r.body?.string() ?: ""))
+                else -> r.body?.bytes()
+            }
+        }
+    }
+
+    suspend fun branches(owner: String, name: String): List<GhBranch> {
+        val out = mutableListOf<GhBranch>()
+        for (page in 1..5) {
+            val list = get("/repos/$owner/$name/branches?per_page=100&page=$page", ListSerializer(GhBranch.serializer()))
+            out += list
+            if (list.size < 100) break
+        }
+        return out
+    }
+
+    suspend fun createBranch(owner: String, name: String, branch: String, fromSha: String) {
+        send("POST", "/repos/$owner/$name/git/refs", buildJsonObject {
+            put("ref", "refs/heads/$branch"); put("sha", fromSha)
+        }, JsonObject.serializer())
+    }
+
+    suspend fun deleteBranch(owner: String, name: String, branch: String) = delete("/repos/$owner/$name/git/refs/heads/${enc(branch)}")
+
+    suspend fun pulls(owner: String, name: String, state: String = "open"): List<GhPull> =
+        get("/repos/$owner/$name/pulls?state=$state&per_page=50", ListSerializer(GhPull.serializer()))
+
+    suspend fun pull(owner: String, name: String, number: Int): GhPull =
+        get("/repos/$owner/$name/pulls/$number", GhPull.serializer())
+
+    suspend fun createPull(owner: String, name: String, head: String, base: String, title: String, body: String): GhPull =
+        send("POST", "/repos/$owner/$name/pulls", buildJsonObject {
+            put("head", head); put("base", base); put("title", title); put("body", body)
+        }, GhPull.serializer())
+
+    suspend fun mergePull(owner: String, name: String, number: Int, method: String, title: String) {
+        send("PUT", "/repos/$owner/$name/pulls/$number/merge", buildJsonObject {
+            put("merge_method", method); put("commit_title", title)
+        }, JsonObject.serializer())
+    }
+
+    suspend fun checkRuns(owner: String, name: String, ref: String): List<GhCheckRun> =
+        get("/repos/$owner/$name/commits/${enc(ref)}/check-runs?per_page=50", GhCheckRuns.serializer()).check_runs
+
+    suspend fun commits(owner: String, name: String, branch: String, page: Int = 1, path: String? = null): List<GhCommitItem> =
+        get("/repos/$owner/$name/commits?sha=${enc(branch)}&per_page=30&page=$page" + (path?.let { "&path=${enc(it)}" } ?: ""),
+            ListSerializer(GhCommitItem.serializer()))
+
+    suspend fun commitDetail(owner: String, name: String, sha: String): GhCommitItem =
+        get("/repos/$owner/$name/commits/$sha", GhCommitItem.serializer())
+
+    suspend fun workflows(owner: String, name: String): List<GhWorkflow> =
+        get("/repos/$owner/$name/actions/workflows?per_page=50", GhWorkflows.serializer()).workflows
+
+    suspend fun dispatchWorkflow(owner: String, name: String, workflowId: Long, ref: String) {
+        exec(req("/repos/$owner/$name/actions/workflows/$workflowId/dispatches")
+            .post(buildJsonObject { put("ref", ref) }.toString().toRequestBody(jsonType)).build()).use {
+            if (!it.isSuccessful) {
+                val body = it.body?.string() ?: ""
+                val hint = if (it.code == 422) " (the workflow needs a 'workflow_dispatch:' trigger to be started manually)" else ""
+                throw GitHubException(it.code, errorMessage(it.code, body) + hint)
+            }
+        }
+    }
+
+    suspend fun cancelRun(owner: String, name: String, runId: Long) {
+        exec(req("/repos/$owner/$name/actions/runs/$runId/cancel").post(ByteArray(0).toRequestBody()).build()).use {
+            if (!it.isSuccessful) throw GitHubException(it.code, errorMessage(it.code, it.body?.string() ?: ""))
+        }
+    }
+
+    suspend fun createRepo(name: String, isPrivate: Boolean, description: String): GhRepo =
+        send("POST", "/user/repos", buildJsonObject {
+            put("name", name); put("private", isPrivate); put("description", description); put("auto_init", false)
+        }, GhRepo.serializer())
+
+    fun zipballUrl(owner: String, name: String, ref: String) = "https://api.github.com/repos/$owner/$name/zipball/${enc(ref)}"
 
     // ---------------- Downloads ----------------
 

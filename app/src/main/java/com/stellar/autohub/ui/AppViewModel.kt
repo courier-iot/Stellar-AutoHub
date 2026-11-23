@@ -202,7 +202,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun Plan.withoutLeaks() = Plan(files, deletable, skipped, strippedRoot, canStrip, looksLikeProject, version,
-        applicationId, warnings, remoteHead, remoteTreeSha, emptyList(), gradlePath)
+        applicationId, warnings, remoteHead, remoteTreeSha, emptyList(), gradlePath, requestedDeletes, checks)
 
     fun setMode(m: UploadMode) { _preview.value = _preview.value?.copy(mode = m) }
     fun setMessage(m: String) { _preview.value = _preview.value?.copy(message = m) }
@@ -255,7 +255,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val st = _preview.value ?: return
         val plan = st.effective ?: return
         val repo = app.store.repo(st.repoId) ?: return
-        val deletes = if (st.mode == UploadMode.MIRROR) st.selectedDeletes else emptySet()
+        val deletes = (if (st.mode == UploadMode.MIRROR) st.selectedDeletes else emptySet()) + plan.requestedDeletes
         if (!UploadQueue.isOnline(app)) { queueCurrent(); return }
         _preview.value = st.copy(committing = true, progress = "Starting…", error = null, canQueue = false)
         viewModelScope.launch {
@@ -277,6 +277,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 app.store.addHistory(entry)
                 st.queuedId?.let { UploadQueue.remove(app, it) }
+                if (_payload.value?.origin == "drafts") {
+                    com.stellar.autohub.editor.Drafts.clear(app, repo.id, repo.branch,
+                        plan.files.map { it.path }.toSet() + plan.requestedDeletes)
+                }
                 if (app.prefs.watchBuilds) BuildWatcher.start(app, repo.id, repo.fullName, sha, entry.id)
                 _payload.value = null
                 pendingQueued = null
@@ -306,6 +310,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             structured = p.structured,
             mode = if (reviewed && st.mode == UploadMode.MIRROR) "MIRROR" else "PATCH",
             deletes = if (reviewed && st.mode == UploadMode.MIRROR) st.selectedDeletes.toList() else emptyList(),
+            requestedDeletes = p.deletes,
+            origin = p.origin,
             stripOverride = st.stripOverride,
             excluded = st.excluded.toList(),
             allowedLeaks = st.allowedLeaks.toList(),
@@ -320,4 +326,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearPreview() { _preview.value = null }
+
+    // ---------- Edit before upload ----------
+
+    /** Blob sha of a file in the repo as it was when the preview loaded. */
+    fun remoteSha(path: String): String? = remote?.entries?.find { it.path == path && it.type == "blob" }?.sha
+
+    /** Text of a file in the pending upload (by its repo path after strip), or null if binary/missing. */
+    fun payloadText(path: String): String? {
+        val st = _preview.value ?: return null
+        val f = st.plan?.files?.find { it.path == path } ?: return null
+        return PathRules.asText(f.bytes)
+    }
+
+    /** Replaces a file's content inside the pending upload, then refreshes the preview. */
+    fun updatePayloadFile(path: String, text: String) {
+        val st = _preview.value ?: return
+        val plan = st.plan ?: return
+        val p = _payload.value ?: return
+        val match = { raw: String ->
+            val n = PathRules.normalize(raw)
+            n == path || (plan.strippedRoot != null && n == "${plan.strippedRoot}/$path")
+        }
+        var found = false
+        val files = p.files.map { f -> if (match(f.path)) { found = true; RawFile(f.path, text.toByteArray()) } else f }
+        _payload.value = Payload(if (found) files else files + RawFile(path, text.toByteArray()), p.label, p.structured, p.deletes, p.origin)
+        replan(st.stripOverride)
+    }
 }

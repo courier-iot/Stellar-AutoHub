@@ -36,8 +36,8 @@ fun LoginScreen(onDone: () -> Unit) {
     var token by remember { mutableStateOf("") }
     var showHelp by remember { mutableStateOf(app.prefs.clientId.isBlank()) }
 
-    suspend fun finish(t: String) {
-        app.setToken(t)
+    suspend fun finish(t: String, refresh: String? = null, expiresIn: Long? = null) {
+        app.setToken(t, refresh, expiresIn)
         val u = app.api.user()
         app.prefs.login = u.login
         onDone()
@@ -83,7 +83,7 @@ fun LoginScreen(onDone: () -> Unit) {
                                             continue // connection blip (e.g. VPN switch): keep waiting for approval
                                         }
                                         when {
-                                            t.access_token != null -> { finish(t.access_token); return@launch }
+                                            t.access_token != null -> { finish(t.access_token, t.refresh_token, t.expires_in); return@launch }
                                             t.error == "authorization_pending" -> {}
                                             t.error == "slow_down" -> interval = (t.interval ?: (interval + 5))
                                             else -> throw IllegalStateException(t.error_description ?: t.error ?: "Sign-in failed")

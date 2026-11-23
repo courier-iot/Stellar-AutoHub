@@ -16,3 +16,7 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.openjsse.**
 -dontwarn okhttp3.internal.platform.**
+
+# SnakeYAML (only the safe node composer is used)
+-dontwarn java.beans.**
+-keep class org.yaml.snakeyaml.** { *; }

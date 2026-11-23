@@ -13,8 +13,8 @@ android {
         applicationId = "com.stellar.autohub"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "2.0.0"
     }
 
     signingConfigs {
@@ -76,6 +76,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.biometric:biometric:1.1.0")
+    implementation("org.yaml:snakeyaml:2.2")
     implementation("androidx.fragment:fragment-ktx:1.8.5")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

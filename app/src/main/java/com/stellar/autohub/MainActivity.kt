@@ -81,7 +81,63 @@ class MainActivity : FragmentActivity() {
                             addRepo = { nav.navigate("addRepo") },
                             openKeys = { nav.navigate("keys") },
                             openSettings = { nav.navigate("settings") },
+                            newProject = { nav.navigate("newProject") },
                         )
+                    }
+                    composable("newProject") {
+                        NewProjectScreen(onBack = { nav.popBackStack() }, onCreated = { id -> nav.popBackStack(); nav.navigate("repo/$id") })
+                    }
+                    composable("files/{id}") { e ->
+                        val id = e.arguments?.getString("id") ?: return@composable
+                        FileBrowserScreen(id, onBack = { nav.popBackStack() }, openFile = { p -> nav.openEditor(id, p) },
+                            openSearch = { nav.navigate("search/$id") }, openChanges = { nav.navigate("changes/$id") })
+                    }
+                    composable(
+                        "edit/{id}?path={path}&line={line}&src={src}",
+                        listOf(
+                            navArgument("id") { type = NavType.StringType },
+                            navArgument("path") { type = NavType.StringType; defaultValue = "" },
+                            navArgument("line") { type = NavType.IntType; defaultValue = 0 },
+                            navArgument("src") { type = NavType.StringType; defaultValue = "repo" },
+                        )
+                    ) { e ->
+                        val id = e.arguments?.getString("id") ?: return@composable
+                        EditorScreen(
+                            repoId = id,
+                            path = e.arguments?.getString("path").orEmpty(),
+                            line = e.arguments?.getInt("line") ?: 0,
+                            source = if (e.arguments?.getString("src") == "upload") com.stellar.autohub.editor.EditorSession.Source.UPLOAD
+                                else com.stellar.autohub.editor.EditorSession.Source.REPO,
+                            vm = vm,
+                            onBack = { nav.popBackStack() },
+                            openChanges = { nav.navigate("changes/$id") },
+                            openDiff = { nav.navigate("diff") },
+                        )
+                    }
+                    composable("diff") { DiffScreen(onBack = { nav.popBackStack() }) }
+                    composable("changes/{id}") { e ->
+                        val id = e.arguments?.getString("id") ?: return@composable
+                        ChangesScreen(id, vm, onBack = { nav.popBackStack() }, openFile = { p -> nav.openEditor(id, p) },
+                            openDiff = { nav.navigate("diff") }, openPreview = { nav.navigate("preview/$id") })
+                    }
+                    composable("history/{id}") { e ->
+                        val id = e.arguments?.getString("id") ?: return@composable
+                        HistoryScreen(id, onBack = { nav.popBackStack() }, openCommit = { sha -> nav.navigate("commit/$id/$sha") })
+                    }
+                    composable("commit/{id}/{sha}") { e ->
+                        val id = e.arguments?.getString("id") ?: return@composable
+                        CommitScreen(id, e.arguments?.getString("sha") ?: return@composable, onBack = { nav.popBackStack() },
+                            openChanges = { nav.navigate("changes/$id") })
+                    }
+                    composable("search/{id}") { e ->
+                        val id = e.arguments?.getString("id") ?: return@composable
+                        SearchScreen(id, onBack = { nav.popBackStack() }, openFile = { p, l -> nav.openEditor(id, p, l) })
+                    }
+                    composable("branches/{id}") { e ->
+                        BranchesScreen(e.arguments?.getString("id") ?: return@composable, onBack = { nav.popBackStack() })
+                    }
+                    composable("stats/{id}") { e ->
+                        StatsScreen(e.arguments?.getString("id") ?: return@composable, onBack = { nav.popBackStack() })
                     }
                     composable("addRepo") {
                         AddRepoScreen(onBack = { nav.popBackStack() }, onAdded = { id ->
@@ -97,6 +153,12 @@ class MainActivity : FragmentActivity() {
                             openRun = { run -> nav.navigate("run/$id/$run") },
                             openSecrets = { nav.navigate("secrets/$id") },
                             openCleanup = { nav.navigate("cleanup/$id") },
+                            openFiles = { nav.navigate("files/$id") },
+                            openChanges = { nav.navigate("changes/$id") },
+                            openHistory = { nav.navigate("history/$id") },
+                            openSearch = { nav.navigate("search/$id") },
+                            openBranches = { nav.navigate("branches/$id") },
+                            openStats = { nav.navigate("stats/$id") },
                         )
                     }
                     composable("preview/{id}") { e ->
@@ -106,7 +168,9 @@ class MainActivity : FragmentActivity() {
                                 vm.clearPreview()
                                 nav.popBackStack()
                                 nav.navigate("watch/$id/$historyId")
-                            })
+                            },
+                            openEditor = { p -> nav.openEditor(id, p, src = "upload") },
+                            openDiff = { nav.navigate("diff") })
                     }
                     composable("watch/{id}/{history}") { e ->
                         val id = e.arguments?.getString("id") ?: return@composable
@@ -123,6 +187,7 @@ class MainActivity : FragmentActivity() {
                             runId = e.arguments?.getLong("run") ?: return@composable,
                             onBack = { nav.popBackStack() },
                             openSecrets = { nav.navigate("secrets/${e.arguments?.getString("id")}") },
+                            openEditor = { p, l -> nav.openEditor(e.arguments?.getString("id") ?: "", p, l) },
                         )
                     }
                     composable("secrets/{id}") { e ->
@@ -203,3 +268,7 @@ class MainActivity : FragmentActivity() {
         const val EXTRA_RUN = "run"
     }
 }
+
+/** Opens a file in the editor (paths are URL-encoded so slashes survive navigation). */
+fun androidx.navigation.NavController.openEditor(repoId: String, path: String, line: Int = 0, src: String = "repo") =
+    navigate("edit/$repoId?path=${Uri.encode(path)}&line=$line&src=$src")

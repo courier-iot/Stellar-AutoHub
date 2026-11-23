@@ -61,6 +61,28 @@ class SecureStore(context: Context) {
         return null
     }
 
+    /** Other small secrets (refresh token, expiry), encrypted with the same Keystore key. */
+    fun saveExtra(name: String, value: String?) {
+        if (value == null) { prefs.edit().remove("x_${name}_iv").remove("x_${name}_ct").apply(); return }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key())
+        val ct = cipher.doFinal(value.toByteArray())
+        prefs.edit()
+            .putString("x_${name}_iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .putString("x_${name}_ct", Base64.encodeToString(ct, Base64.NO_WRAP))
+            .apply()
+    }
+
+    fun extra(name: String): String? = try {
+        val iv = prefs.getString("x_${name}_iv", null)
+        val ct = prefs.getString("x_${name}_ct", null)
+        if (iv == null || ct == null) null else {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+            String(cipher.doFinal(Base64.decode(ct, Base64.NO_WRAP)))
+        }
+    } catch (e: Exception) { null }
+
     fun clear() {
         prefs.edit().clear().apply()
     }

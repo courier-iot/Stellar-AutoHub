@@ -48,3 +48,22 @@ The secrets screen reads the workflows, lists every `secrets.NAME` they use, and
 - **GitHub storage cleanup:** old runs, artifacts and releases.
 - **Workflow health:** finds outdated actions and deprecation warnings, with one-tap fixes through the normal preview.
 - **Crash log** stored on the phone only, **offline queue**, **automatic cache cleanup**, and an **R8-shrunk APK**.
+
+## Developer tools (v2.0.0)
+
+- **Files:** browse any branch, view images, save files to the phone, create and delete files.
+- **Editor:**
+  - Syntax highlighting for Kotlin, Java, XML, Gradle, YAML, JSON, Markdown, properties and shell.
+  - Line numbers, find & replace, undo/redo, tabs, word wrap, go to line, Markdown preview.
+  - Edits are saved on the phone as **drafts** until you commit.
+- **Changes:** every draft goes into one commit, reviewed through the normal preview. It warns you if a file changed on GitHub meanwhile.
+- **Pre-commit checks:** unbalanced brackets (Kotlin/Java/Gradle), invalid YAML, JSON or XML.
+- **Diffs** in the preview, in Changes, and for every commit.
+- **Edit before upload:** tap a file in the preview.
+- **History:** commits with diffs, "Use this version" and "Undo in this file".
+- **Search** across the repo, including your drafts.
+- **Branches and pull requests:** create and switch branches, open a PR, see its checks, then squash & merge.
+- **Build now**, **Cancel** a running build, **tap an error** to jump to that line, and **Copy for Claude** (report + code around each error + file list).
+- **New app from template**, **share/save the repo as a zip**, **build stats**, **mute per repo**, and a **home-screen widget**.
+- **Display:** text size, high contrast, pure black, and the accent color.
+- **Expiring OAuth tokens renew automatically** (sign in once with the code after updating).

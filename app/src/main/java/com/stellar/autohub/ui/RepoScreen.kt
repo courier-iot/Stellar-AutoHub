@@ -38,6 +38,12 @@ fun RepoScreen(
     openRun: (Long) -> Unit,
     openSecrets: () -> Unit,
     openCleanup: () -> Unit,
+    openFiles: () -> Unit = {},
+    openChanges: () -> Unit = {},
+    openHistory: () -> Unit = {},
+    openSearch: () -> Unit = {},
+    openBranches: () -> Unit = {},
+    openStats: () -> Unit = {},
 ) {
     val app = AutoHubApp.instance
     val ctx = LocalContext.current
@@ -63,12 +69,69 @@ fun RepoScreen(
     var undoTarget by remember { mutableStateOf<Pair<HistoryEntry, Int>?>(null) }
     var undoBusy by remember { mutableStateOf<String?>(null) }
     val queue by UploadQueue.items.collectAsState()
+    val drafts by com.stellar.autohub.editor.Drafts.all.collectAsState()
+    var buildBusy by remember { mutableStateOf<String?>(null) }
+    var workflowChoices by remember { mutableStateOf<List<com.stellar.autohub.data.GhWorkflow>?>(null) }
+    var zipAction by remember { mutableStateOf<String?>(null) }
+    var zipFile by remember { mutableStateOf<java.io.File?>(null) }
     val myQueue = queue.filter { it.repoId == repoId }
 
     LaunchedEffect(repoId, refresh) {
         runsError = null
         try { runs = app.api.recentRuns(repo.owner, repo.name, repo.branch) } catch (e: Exception) { runsError = e.message }
         secrets = try { app.secrets.overview(repo) } catch (e: Exception) { null }
+    }
+
+    /** Starts a workflow by hand on the current branch, then opens the new run. */
+    fun startWorkflow(wf: com.stellar.autohub.data.GhWorkflow) {
+        workflowChoices = null
+        buildBusy = "Starting ${wf.name}…"
+        scope.launch {
+            try {
+                val since = System.currentTimeMillis() - 5000
+                app.api.dispatchWorkflow(repo.owner, repo.name, wf.id, repo.branch)
+                var found: GhRun? = null
+                for (i in 0 until 20) {
+                    kotlinx.coroutines.delay(3000)
+                    found = app.api.recentRuns(repo.owner, repo.name, repo.branch).firstOrNull { r ->
+                        r.event == "workflow_dispatch" && (r.created_at?.let { java.time.Instant.parse(it).toEpochMilli() } ?: 0) >= since
+                    }
+                    if (found != null) break
+                }
+                if (found != null) openRun(found.id) else ctx.toast("Started. It'll show in Recent builds in a moment.")
+                refresh++
+            } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't start a build") } finally { buildBusy = null }
+        }
+    }
+
+    val saveZip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val f = zipFile; zipFile = null
+        if (uri != null && f != null) try {
+            ctx.contentResolver.openOutputStream(uri)?.use { out -> f.inputStream().use { it.copyTo(out) } }
+            ctx.toast("Saved")
+        } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't save") }
+    }
+
+    LaunchedEffect(zipAction) {
+        val action = zipAction ?: return@LaunchedEffect
+        try {
+            ctx.toast("Downloading ${repo.name} (${repo.branch})…")
+            val dir = java.io.File(ctx.cacheDir, "shared").apply { mkdirs() }
+            val f = java.io.File(dir, "${repo.name}-${repo.branch.replace('/', '-')}.zip")
+            app.api.download(app.api.zipballUrl(repo.owner, repo.name, repo.branch), "application/vnd.github+json", f) { _, _ -> }
+            if (action == "share") {
+                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
+                ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }, "Share ${repo.name}"))
+            } else {
+                zipFile = f
+                saveZip.launch(f.name)
+            }
+        } catch (e: Exception) { ctx.toast(e.message ?: "Download failed") }
+        zipAction = null
     }
 
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -87,6 +150,12 @@ fun RepoScreen(
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("Secrets") }, onClick = { menu = false; openSecrets() })
                 DropdownMenuItem(text = { Text("Clean up GitHub storage") }, onClick = { menu = false; openCleanup() })
+                DropdownMenuItem(text = { Text("Share repo as zip") }, onClick = { menu = false; zipAction = "share" })
+                DropdownMenuItem(text = { Text("Save repo as zip") }, onClick = { menu = false; zipAction = "save" })
+                DropdownMenuItem(text = { Text(if (repo.muted) "Unmute build notifications" else "Mute build notifications") }, onClick = {
+                    menu = false; app.store.upsertRepo(repo.copy(muted = !repo.muted))
+                    ctx.toast(if (repo.muted) "Notifications on" else "Muted. Builds still show here.")
+                })
                 DropdownMenuItem(text = { Text("Repo settings") }, onClick = { menu = false; editing = true })
                 DropdownMenuItem(text = { Text("Open on GitHub") }, onClick = {
                     menu = false
@@ -100,7 +169,43 @@ fun RepoScreen(
             Modifier.padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("${repo.owner} · ${repo.branch}", color = Stellar.Dim)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(repo.owner, color = Stellar.Dim, modifier = Modifier.weight(1f))
+                if (repo.muted) Chip("MUTED", Stellar.Dim)
+                Spacer(Modifier.width(6.dp))
+                Box(Modifier.clickable { openBranches() }) { Chip("⑂ ${repo.branch}", if (repo.branch == repo.baseBranch) Stellar.Violet else Stellar.Amber) }
+            }
+
+            // Developer tools
+            val draftCount = drafts.count { it.repoId == repoId && it.branch == repo.branch }
+            Panel {
+                Label("Code")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ToolButton("📁 Files", Modifier.weight(1f), openFiles)
+                    ToolButton(if (draftCount > 0) "✏️ Changes ($draftCount)" else "✏️ Changes", Modifier.weight(1f), openChanges)
+                    ToolButton("🔍 Search", Modifier.weight(1f), openSearch)
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ToolButton("🕘 History", Modifier.weight(1f), openHistory)
+                    ToolButton("⑂ Branches", Modifier.weight(1f), openBranches)
+                    ToolButton("📈 Stats", Modifier.weight(1f), openStats)
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(enabled = buildBusy == null, modifier = Modifier.weight(1f), onClick = {
+                        buildBusy = "Starting…"
+                        scope.launch {
+                            try {
+                                val wfs = app.api.workflows(repo.owner, repo.name).filter { it.state == "active" }
+                                if (wfs.isEmpty()) throw IllegalStateException("No active workflows in this repo.")
+                                if (wfs.size > 1) { workflowChoices = wfs; return@launch }
+                                startWorkflow(wfs.first())
+                            } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't start a build"); buildBusy = null }
+                        }
+                    }) { Text(buildBusy ?: "▶ Build now") }
+                }
+            }
 
             Panel(accent = Stellar.Cyan) {
                 Label("Upload")
@@ -243,6 +348,21 @@ fun RepoScreen(
         }
     }
 
+    workflowChoices?.let { wfs ->
+        AlertDialog(
+            onDismissRequest = { workflowChoices = null; buildBusy = null },
+            title = { Text("Which workflow?") },
+            text = {
+                Column {
+                    wfs.forEach { wf ->
+                        TextButton(onClick = { startWorkflow(wf) }) { Text("${wf.name}  (${wf.path.substringAfterLast('/')})") }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { workflowChoices = null; buildBusy = null }) { Text("Cancel") } },
+        )
+    }
+
     undoTarget?.let { (h, newer) ->
         AlertDialog(
             onDismissRequest = { undoTarget = null },
@@ -321,4 +441,11 @@ private fun RepoSettingsDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun ToolButton(label: String, modifier: Modifier, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick, modifier = modifier, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+        Text(label, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+    }
 }

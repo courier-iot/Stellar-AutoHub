@@ -33,8 +33,10 @@ fun Starfield(modifier: Modifier = Modifier) {
         List(90) { Triple(r.nextFloat(), r.nextFloat(), r.nextFloat()) }
     }
     Canvas(modifier.fillMaxSize()) {
+        val pure = Stellar.palette.pureBlack
         drawRect(
-            Brush.verticalGradient(listOf(Color(0xFF0A0F24), Stellar.Space, Color(0xFF0C0718)))
+            if (pure) Brush.verticalGradient(listOf(Color.Black, Color.Black))
+            else Brush.verticalGradient(listOf(Color(0xFF0A0F24), Color(0xFF070A14), Color(0xFF0C0718)))
         )
         stars.forEach { (x, y, s) ->
             drawCircle(
@@ -59,6 +61,7 @@ fun Screen(
         Starfield()
         Scaffold(
             containerColor = Color.Transparent,
+            contentColor = Stellar.Text,
             topBar = {
                 TopAppBar(
                     title = { Text(title, maxLines = 1) },
@@ -68,7 +71,12 @@ fun Screen(
                         }
                     },
                     actions = actions,
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                        titleContentColor = Stellar.Text,
+                        navigationIconContentColor = Stellar.Text,
+                        actionIconContentColor = Stellar.Text,
+                    ),
                 )
             },
             floatingActionButton = floating,

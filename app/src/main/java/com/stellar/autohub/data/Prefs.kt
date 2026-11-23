@@ -52,10 +52,39 @@ class Prefs(context: Context) {
         get() = p.getLong("last_backup", 0)
         set(v) = p.edit().putLong("last_backup", v).apply()
 
+    /** Token expiry value the user already dismissed the warning for. */
+    var tokenWarnDismissed: String?
+        get() = p.getString("token_warn_dismissed", null)
+        set(v) = p.edit().putString("token_warn_dismissed", v).apply()
+
+    // ---------- Display ----------
+    var textScale: Float
+        get() = p.getFloat("text_scale", 1f)
+        set(v) = p.edit().putFloat("text_scale", v).apply()
+
+    var highContrast: Boolean
+        get() = p.getBoolean("high_contrast", false)
+        set(v) = p.edit().putBoolean("high_contrast", v).apply()
+
+    var pureBlack: Boolean
+        get() = p.getBoolean("pure_black", false)
+        set(v) = p.edit().putBoolean("pure_black", v).apply()
+
+    /** cyan | magenta | violet | green | amber */
+    var accent: String
+        get() = p.getString("accent", "cyan") ?: "cyan"
+        set(v) = p.edit().putString("accent", v).apply()
+
+    var editorWrap: Boolean
+        get() = p.getBoolean("editor_wrap", false)
+        set(v) = p.edit().putBoolean("editor_wrap", v).apply()
+
     fun exportMap(): Map<String, String> = mapOf(
         "client_id" to clientId, "ignore" to ignorePatterns, "auto_strip" to autoStrip.toString(),
         "watch_builds" to watchBuilds.toString(), "app_lock" to appLock.toString(),
         "confirm_sensitive" to confirmSensitive.toString(), "scan_secrets" to scanSecrets.toString(),
+        "text_scale" to textScale.toString(), "high_contrast" to highContrast.toString(),
+        "pure_black" to pureBlack.toString(), "accent" to accent,
     )
 
     fun importMap(m: Map<String, String>) {
@@ -65,6 +94,10 @@ class Prefs(context: Context) {
         m["watch_builds"]?.toBooleanStrictOrNull()?.let { watchBuilds = it }
         m["confirm_sensitive"]?.toBooleanStrictOrNull()?.let { confirmSensitive = it }
         m["scan_secrets"]?.toBooleanStrictOrNull()?.let { scanSecrets = it }
+        m["text_scale"]?.toFloatOrNull()?.let { textScale = it }
+        m["high_contrast"]?.toBooleanStrictOrNull()?.let { highContrast = it }
+        m["pure_black"]?.toBooleanStrictOrNull()?.let { pureBlack = it }
+        m["accent"]?.let { accent = it }
     }
 
     companion object {

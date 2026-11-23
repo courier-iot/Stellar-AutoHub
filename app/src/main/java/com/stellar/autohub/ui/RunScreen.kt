@@ -24,6 +24,10 @@ import com.stellar.autohub.data.GhAnnotation
 import com.stellar.autohub.data.GhJob
 import com.stellar.autohub.data.GhRun
 import com.stellar.autohub.ui.theme.Stellar
+import com.stellar.autohub.editor.ErrorLocation
+import com.stellar.autohub.editor.ErrorLocations
+import com.stellar.autohub.security.Guard
+import androidx.compose.foundation.background
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -31,7 +35,13 @@ import java.io.File
 private enum class LogView { ERRORS, STEP, ALL }
 
 @Composable
-fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -> Unit) {
+fun RunScreen(
+    repoId: String,
+    runId: Long,
+    onBack: () -> Unit,
+    openSecrets: () -> Unit,
+    openEditor: (String, Int) -> Unit = { _, _ -> },
+) {
     val app = AutoHubApp.instance
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -50,6 +60,7 @@ fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -
     var view by remember { mutableStateOf(LogView.ERRORS) }
     var missingSecrets by remember { mutableStateOf<List<String>>(emptyList()) }
     var busy by remember { mutableStateOf<String?>(null) }
+    var contextBusy by remember { mutableStateOf<String?>(null) }
 
     if (repo == null) { Screen("Build", onBack) { Text("Repo not found", Modifier.padding(it).padding(16.dp)) }; return }
 
@@ -93,6 +104,10 @@ fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -
     val history = app.store.data.collectAsState().value.history
     val entry = r?.let { rr -> history.find { it.repoId == repoId && it.commitSha == rr.head_sha } }
     val failedSection = remember(sections) { LogParser.failedSection(sections) }
+    val locations = remember(sections, annotations) {
+        ErrorLocations.all(sections.flatMap { s -> s.lines.filter { it.kind == LineKind.ERROR }.map { it.text } } +
+            annotations.mapNotNull { it.message })
+    }
 
     Screen(
         title = r?.display_title ?: "Build",
@@ -124,6 +139,15 @@ fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(r.html_url))) }) { Text("GitHub") }
+                        if (r.status != "completed") TextButton(enabled = busy == null, onClick = {
+                            Guard.sensitive(ctx, "Cancel this build") {
+                                busy = "Cancelling…"
+                                scope.launch {
+                                    try { app.api.cancelRun(repo.owner, repo.name, r.id); delay(2000); poll++ }
+                                    catch (e: Exception) { ctx.toast(e.message ?: "Couldn't cancel") } finally { busy = null }
+                                }
+                            }
+                        }) { Text("Cancel", color = Stellar.Red) }
                         if (r.status == "completed" && r.conclusion != "success") {
                             TextButton(enabled = busy == null, onClick = {
                                 busy = "Re-running…"
@@ -219,7 +243,17 @@ fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -
                                 Button(onClick = {
                                     val msg = entry?.message
                                     ctx.copy("Build report", LogParser.report(repo, r, lj, annotations, failedSection, msg))
-                                }) { Text("Copy for Claude") }
+                                }) { Text("Copy report") }
+                                Button(enabled = contextBusy == null, onClick = {
+                                    contextBusy = "Collecting code…"
+                                    scope.launch {
+                                        try {
+                                            val text = claudeContext(repo, r, lj, annotations, failedSection, entry?.message, locations)
+                                            ctx.copy("Context for Claude", text)
+                                            ctx.toast("Copied ${text.length / 1000}k characters: paste it to Claude")
+                                        } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't collect context") } finally { contextBusy = null }
+                                    }
+                                }) { Text(contextBusy ?: "Copy for Claude") }
                                 OutlinedButton(onClick = {
                                     val dir = File(ctx.cacheDir, "shared").apply { mkdirs() }
                                     val f = File(dir, "${repo.name}-run${r.id}-${lj.name.replace(Regex("[^A-Za-z0-9]"), "_")}.txt")
@@ -231,6 +265,17 @@ fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }, "Share log"))
                                 }) { Text("Share log") }
+                            }
+                        }
+                    }
+                }
+                if (locations.isNotEmpty()) item(key = "locs") {
+                    Panel(accent = Stellar.Red) {
+                        Label("Errors in your code (tap to open)", Stellar.Red)
+                        locations.take(12).forEach { e ->
+                            Column(Modifier.fillMaxWidth().clickable { openEditor(e.path, e.line) }.padding(vertical = 4.dp)) {
+                                MonoText("${e.path}:${e.line}", Stellar.Cyan)
+                                if (e.message.isNotBlank()) Text(e.message.take(200), color = Stellar.Text, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -251,10 +296,52 @@ fun RunScreen(repoId: String, runId: Long, onBack: () -> Unit, openSecrets: () -
                             LineKind.HEADER -> Stellar.Cyan
                             LineKind.NORMAL -> Stellar.Text.copy(alpha = 0.8f)
                         }
-                        MonoText(l.text, c)
+                        val loc = remember(l.text) { ErrorLocations.find(l.text) }
+                        if (loc != null && loc.line > 0) MonoText(l.text, c, Modifier.clickable { openEditor(loc.path, loc.line) }.background(Stellar.Red.copy(alpha = 0.08f)))
+                        else MonoText(l.text, c)
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * Everything Claude needs to fix a failed build in one paste: the report, the code around each
+ * error (from the exact commit that failed), and the project's file list.
+ */
+private suspend fun claudeContext(
+    repo: com.stellar.autohub.data.RepoProfile, run: GhRun, job: GhJob, annotations: List<GhAnnotation>,
+    section: LogSection?, message: String?, locations: List<ErrorLocation>,
+): String {
+    val app = AutoHubApp.instance
+    val sb = StringBuilder(LogParser.report(repo, run, job, annotations, section, message))
+    val byFile = locations.groupBy { it.path }.entries.take(6)
+    if (byFile.isNotEmpty()) {
+        sb.appendLine().appendLine("=== Code at the failing commit (${run.head_sha.take(7)}) ===")
+        for ((path, locs) in byFile) {
+            val bytes = try { app.api.rawBytes(repo.owner, repo.name, path, run.head_sha) } catch (e: Exception) { null }
+            val text = bytes?.let { com.stellar.autohub.upload.PathRules.asText(it) }
+            if (text == null) { sb.appendLine().appendLine("--- $path (couldn't load)"); continue }
+            val lines = text.lines()
+            // Whole file if small, else windows around the errors
+            sb.appendLine().appendLine("--- $path (errors on line ${locs.joinToString { "${it.line}" }})")
+            val keep = sortedSetOf<Int>()
+            if (lines.size <= 250) keep += lines.indices
+            else locs.forEach { l -> for (i in (l.line - 25)..(l.line + 25)) if (i - 1 in lines.indices) keep += i - 1 }
+            var last = -2
+            for (i in keep) {
+                if (i != last + 1) sb.appendLine("   ⋯")
+                sb.append((i + 1).toString().padStart(5)).append(if (locs.any { it.line == i + 1 }) " >> " else " | ").appendLine(lines[i])
+                last = i
+            }
+        }
+    }
+    try {
+        val tree = app.blobs.tree(repo, force = true).filter { it.type == "blob" && !it.path.contains("/build/") }.map { it.path }
+        sb.appendLine().appendLine("=== Project files (${tree.size}) ===")
+        tree.take(400).forEach { sb.appendLine(it) }
+        if (tree.size > 400) sb.appendLine("… ${tree.size - 400} more")
+    } catch (_: Exception) { }
+    return if (sb.length > 90_000) sb.substring(0, 90_000) + "\n…(trimmed)" else sb.toString()
 }

@@ -12,7 +12,12 @@ data class RepoProfile(
     val packageName: String = "",
     /** Comma/newline separated globs that are never deleted in Mirror mode. */
     val protectedPatterns: String = "README*\nLICENSE*",
+    /** The repo's main branch (PR target). Empty = unknown, treat [branch] as default. */
+    val defaultBranch: String = "",
+    /** No build notifications for this repo. */
+    val muted: Boolean = false,
 ) {
+    val baseBranch: String get() = defaultBranch.ifEmpty { branch }
     val fullName: String get() = "$owner/$name"
 }
 
@@ -87,6 +92,9 @@ data class GhSha(val sha: String)
 data class GhRun(
     val id: Long,
     val updated_at: String? = null,
+    val run_started_at: String? = null,
+    val event: String? = null,
+    val head_branch: String? = null,
     val name: String? = null,
     val display_title: String? = null,
     val status: String? = null,
@@ -174,6 +182,10 @@ data class DeviceCode(
 @Serializable
 data class DeviceToken(
     val access_token: String? = null,
+    /** Only when the OAuth App issues expiring tokens (8 h). */
+    val refresh_token: String? = null,
+    val expires_in: Long? = null,
+    val refresh_token_expires_in: Long? = null,
     val error: String? = null,
     val error_description: String? = null,
     val interval: Int? = null,
@@ -209,9 +221,72 @@ data class QueuedUpload(
     val stripOverride: Boolean? = null,
     val excluded: List<String> = emptyList(),
     val allowedLeaks: List<String> = emptyList(),
+    /** Deletions from the editor/file browser (applied in patch mode). */
+    val requestedDeletes: List<String> = emptyList(),
+    val origin: String = "",
     /** False when queued without a preview: only patch mode is allowed then. */
     val reviewed: Boolean = true,
     /** waiting | needs_review | failed */
     val status: String = "waiting",
     val error: String? = null,
 )
+
+@Serializable
+data class GhBranch(val name: String, val commit: GhSha, val protected: Boolean = false)
+
+@Serializable
+data class GhPrRef(val ref: String, val sha: String)
+
+@Serializable
+data class GhPull(
+    val number: Int,
+    val title: String,
+    val state: String = "open",
+    val html_url: String = "",
+    val head: GhPrRef,
+    val base: GhPrRef,
+    val mergeable: Boolean? = null,
+    val mergeable_state: String? = null,
+    val merged: Boolean = false,
+    val body: String? = null,
+)
+
+@Serializable
+data class GhCheckRun(val name: String, val status: String? = null, val conclusion: String? = null)
+
+@Serializable
+data class GhCheckRuns(val check_runs: List<GhCheckRun> = emptyList())
+
+@Serializable
+data class GhCommitAuthor(val name: String? = null, val date: String? = null)
+
+@Serializable
+data class GhCommitInfo(val message: String = "", val author: GhCommitAuthor? = null)
+
+@Serializable
+data class GhCommitFile(
+    val filename: String,
+    val status: String = "modified",
+    val additions: Int = 0,
+    val deletions: Int = 0,
+    val patch: String? = null,
+    val previous_filename: String? = null,
+)
+
+@Serializable
+data class GhCommitItem(
+    val sha: String,
+    val commit: GhCommitInfo,
+    val html_url: String = "",
+    val parents: List<GhSha> = emptyList(),
+    val files: List<GhCommitFile> = emptyList(),
+)
+
+@Serializable
+data class GhBlob(val sha: String, val content: String = "", val encoding: String = "base64", val size: Long = 0)
+
+@Serializable
+data class GhWorkflow(val id: Long, val name: String, val path: String, val state: String = "active")
+
+@Serializable
+data class GhWorkflows(val workflows: List<GhWorkflow> = emptyList())

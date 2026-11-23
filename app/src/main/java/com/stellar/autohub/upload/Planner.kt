@@ -34,11 +34,16 @@ class Plan(
     val leaks: List<Leak> = emptyList(),
     /** Path of the gradle file holding versionName (repo path, after strip). */
     val gradlePath: String? = null,
+    /** Deletions asked for explicitly (editor/file browser); applied in patch mode too. */
+    val requestedDeletes: Set<String> = emptySet(),
+    /** Pre-commit problems (unbalanced brackets, invalid YAML/JSON/XML) in new/changed files. */
+    val checks: List<com.stellar.autohub.editor.CheckIssue> = emptyList(),
 ) {
     /** Same plan without some files (e.g. ones the user excluded after a secret warning). */
     fun excluding(paths: Set<String>): Plan = if (paths.isEmpty()) this else Plan(
         files.filter { it.path !in paths }, deletable, skipped, strippedRoot, canStrip, looksLikeProject, version,
-        applicationId, warnings, remoteHead, remoteTreeSha, leaks.filter { it.path !in paths }, gradlePath,
+        applicationId, warnings, remoteHead, remoteTreeSha, leaks.filter { it.path !in paths }, gradlePath, requestedDeletes,
+        checks.filter { it.path !in paths },
     )
 
     val added get() = files.count { it.status == FileStatus.ADDED }
@@ -164,6 +169,10 @@ object Planner {
             remoteTreeSha = remote.treeSha,
             leaks = LeakScanner.scan(planned),
             gradlePath = PathRules.GRADLE_FILES.firstOrNull { byPath.containsKey(it) },
+            checks = planned.filter { it.status != FileStatus.UNCHANGED }.flatMap { f ->
+                PathRules.asText(f.bytes)?.let { com.stellar.autohub.editor.Checks.check(f.path, it) } ?: emptyList()
+            },
+            requestedDeletes = payload.deletes.mapNotNull { PathRules.normalize(it) }.filter { it in remoteFiles && it !in uploaded }.toSet(),
         )
     }
 }
