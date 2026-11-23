@@ -85,7 +85,8 @@ class MainActivity : FragmentActivity() {
                         )
                     }
                     composable("newProject") {
-                        NewProjectScreen(onBack = { nav.popBackStack() }, onCreated = { id -> nav.popBackStack(); nav.navigate("repo/$id") })
+                        NewProjectScreen(onBack = { nav.popBackStack() }, onCreated = { id -> nav.popBackStack(); nav.navigate("repo/$id") },
+                            openKeys = { nav.navigate("keys") })
                     }
                     composable("files/{id}") { e ->
                         val id = e.arguments?.getString("id") ?: return@composable

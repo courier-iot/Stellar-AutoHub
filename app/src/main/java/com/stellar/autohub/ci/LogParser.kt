@@ -15,10 +15,17 @@ class LogSection(val title: String, val lines: List<LogLine>) {
 
 object LogParser {
     private val timestamp = Regex("""^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z\s?""")
-    private val strongError = listOf("##[error]", "e: ", "error:", "FAILURE:", "BUILD FAILED", "What went wrong", "fatal:", "Unresolved reference")
+    private val strongError = listOf(
+        "##[error]", "e: ", "error:", "FAILURE:", "BUILD FAILED", "What went wrong", "fatal:", "Unresolved reference",
+        "AssertionError", "AssertionFailedError", "ComparisonFailure", "expected:<", "There were failing tests",
+        "tests completed,", "Test failed", "CMake Error", "make: ***", "ninja: build stopped", "Segmentation fault",
+        "No such file or directory", "command not found", "Permission denied",
+    )
     private val warnHints = listOf("##[warning]", "w: ", "warning:")
 
-    fun clean(raw: String): List<String> = raw.lines().map { it.replace(timestamp, "").trimEnd('\r') }
+    fun clean(raw: String): List<String> = raw.lines().map { cleanLine(it) }
+
+    fun cleanLine(l: String): String = l.replace(timestamp, "").trimEnd('\r').removePrefix("\uFEFF")
 
     fun kind(line: String): LineKind {
         val t = line.trimStart()
@@ -33,8 +40,13 @@ object LogParser {
     }
 
     /** Splits a job log into sections at each "##[group]Run …" marker (one per step, roughly). */
-    fun sections(raw: String): List<LogSection> {
-        val lines = clean(raw)
+    fun sections(raw: String): List<LogSection> = sectionsOf(clean(raw))
+
+    /** A whole step's output as one section (from the per-step log files). */
+    fun section(title: String, lines: List<String>, firstIndex: Int = 0): LogSection =
+        LogSection(title, lines.mapIndexed { i, l -> LogLine(firstIndex + i, l.replace("##[group]", "▸ ").replace("##[endgroup]", ""), kind(l)) })
+
+    fun sectionsOf(lines: List<String>): List<LogSection> {
         val out = mutableListOf<LogSection>()
         var title = "Set up job"
         var cur = mutableListOf<LogLine>()

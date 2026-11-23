@@ -20,6 +20,8 @@ import com.stellar.autohub.ci.BuildWatcher
 import com.stellar.autohub.ci.LineKind
 import com.stellar.autohub.ci.LogParser
 import com.stellar.autohub.ci.LogSection
+import com.stellar.autohub.ci.LoadedLog
+import com.stellar.autohub.ci.Logs
 import com.stellar.autohub.data.GhAnnotation
 import com.stellar.autohub.data.GhJob
 import com.stellar.autohub.data.GhRun
@@ -52,8 +54,9 @@ fun RunScreen(
     var poll by remember { mutableIntStateOf(0) }
 
     var logJob by remember { mutableStateOf<GhJob?>(null) }
-    var rawLog by remember { mutableStateOf<String?>(null) }
-    var sections by remember { mutableStateOf<List<LogSection>>(emptyList()) }
+    var loaded by remember { mutableStateOf<LoadedLog?>(null) }
+    var logStatus by remember { mutableStateOf("Downloading log…") }
+    var pickedStep by remember { mutableStateOf<Int?>(null) }
     var annotations by remember { mutableStateOf<List<GhAnnotation>>(emptyList()) }
     var logLoading by remember { mutableStateOf(false) }
     var logError by remember { mutableStateOf<String?>(null) }
@@ -65,15 +68,16 @@ fun RunScreen(
     if (repo == null) { Screen("Build", onBack) { Text("Repo not found", Modifier.padding(it).padding(16.dp)) }; return }
 
     fun loadLog(job: GhJob) {
-        logJob = job; logLoading = true; logError = null; rawLog = null
+        logJob = job; logLoading = true; logError = null; loaded = null; pickedStep = null
         scope.launch {
             try {
                 annotations = app.api.annotations(repo.owner, repo.name, job.id)
-                val raw = app.api.jobLog(repo.owner, repo.name, job.id)
-                rawLog = raw
-                sections = LogParser.sections(raw)
-            } catch (e: Exception) {
-                logError = e.message
+                loaded = Logs.load(ctx, app.api, repo, runId, job) { logStatus = it }
+                view = LogView.ERRORS
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                logError = "Couldn't load the log: ${e.message ?: e.javaClass.simpleName}" +
+                    if (e is OutOfMemoryError) " (the log is too big for this phone; use Share log on GitHub instead)" else ""
             } finally { logLoading = false }
         }
     }
@@ -103,7 +107,12 @@ fun RunScreen(
     val r = run
     val history = app.store.data.collectAsState().value.history
     val entry = r?.let { rr -> history.find { it.repoId == repoId && it.commitSha == rr.head_sha } }
-    val failedSection = remember(sections) { LogParser.failedSection(sections) }
+    val sections = loaded?.sections ?: emptyList()
+    val failedSection = remember(loaded, logJob) { val l = loaded; val j = logJob; if (l != null && j != null) Logs.failedSection(l, j) else null }
+    val stepSection = remember(loaded, logJob, pickedStep) {
+        val l = loaded; val j = logJob; val n = pickedStep
+        if (l != null && j != null && n != null) Logs.stepSection(l, j, n) else null
+    }
     val locations = remember(sections, annotations) {
         ErrorLocations.all(sections.flatMap { s -> s.lines.filter { it.kind == LineKind.ERROR }.map { it.text } } +
             annotations.mapNotNull { it.message })
@@ -154,7 +163,7 @@ fun RunScreen(
                                 scope.launch {
                                     try {
                                         app.api.rerunFailed(repo.owner, repo.name, r.id)
-                                        logJob = null; rawLog = null; sections = emptyList(); annotations = emptyList()
+                                        logJob = null; loaded = null; annotations = emptyList()
                                         entry?.let { e -> BuildWatcher.start(app, repo.id, repo.fullName, r.head_sha, e.id) }
                                         delay(2500); poll++
                                     } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't re-run") } finally { busy = null }
@@ -167,7 +176,7 @@ fun RunScreen(
                                 scope.launch {
                                     try {
                                         app.api.rerunAll(repo.owner, repo.name, r.id)
-                                        logJob = null; rawLog = null; sections = emptyList()
+                                        logJob = null; loaded = null
                                         entry?.let { e -> BuildWatcher.start(app, repo.id, repo.fullName, r.head_sha, e.id) }
                                         delay(2500); poll++
                                     } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't re-run") } finally { busy = null }
@@ -206,9 +215,14 @@ fun RunScreen(
                             s.status == "in_progress" -> "●" to Stellar.Cyan
                             else -> "○" to Stellar.Dim
                         }
-                        Row(Modifier.padding(vertical = 2.dp)) {
+                        val canOpen = job.status == "completed" && s.conclusion != "skipped" && s.conclusion != null
+                        Row(Modifier.fillMaxWidth().clickable(enabled = canOpen) {
+                            if (logJob?.id != job.id || loaded == null) loadLog(job)
+                            pickedStep = s.number; view = LogView.STEP
+                        }.padding(vertical = 3.dp)) {
                             Text(icon, color = color, modifier = Modifier.width(22.dp))
-                            Text(s.name, color = if (s.conclusion == "failure") Stellar.Red else Stellar.Text)
+                            Text(s.name, color = if (s.conclusion == "failure") Stellar.Red else Stellar.Text, modifier = Modifier.weight(1f))
+                            if (canOpen) Text("›", color = Stellar.Dim)
                         }
                     }
                     if (job.status == "completed") {
@@ -223,7 +237,7 @@ fun RunScreen(
                 item(key = "logtools") {
                     Panel(accent = if (lj.conclusion == "failure") Stellar.Red else Stellar.Line) {
                         Label("Log: ${lj.name}", if (lj.conclusion == "failure") Stellar.Red else Stellar.Cyan)
-                        if (logLoading) Busy("Downloading log…")
+                        if (logLoading) Busy(logStatus)
                         logError?.let { Text(it, color = Stellar.Red) }
                         val ann = annotations.filter { it.annotation_level == "failure" }
                         if (ann.isNotEmpty()) {
@@ -232,10 +246,17 @@ fun RunScreen(
                             }
                             Spacer(Modifier.height(6.dp))
                         }
-                        if (rawLog != null) {
+                        loaded?.let { ld ->
+                            Text(
+                                "${ld.lines.size} lines" + (if (ld.droppedLines > 0) " (first ${ld.droppedLines} skipped, log is huge)" else "") +
+                                    if (ld.steps.isNotEmpty()) " · per-step output available" else "",
+                                color = Stellar.Dim, style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        if (loaded != null) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 FilterChip(view == LogView.ERRORS, { view = LogView.ERRORS }, { Text("Errors") })
-                                FilterChip(view == LogView.STEP, { view = LogView.STEP }, { Text("Failed step") })
+                                FilterChip(view == LogView.STEP, { view = LogView.STEP; pickedStep = null }, { Text("Failed step") })
                                 FilterChip(view == LogView.ALL, { view = LogView.ALL }, { Text("Full") })
                             }
                             Spacer(Modifier.height(6.dp))
@@ -257,7 +278,7 @@ fun RunScreen(
                                 OutlinedButton(onClick = {
                                     val dir = File(ctx.cacheDir, "shared").apply { mkdirs() }
                                     val f = File(dir, "${repo.name}-run${r.id}-${lj.name.replace(Regex("[^A-Za-z0-9]"), "_")}.txt")
-                                    f.writeText(LogParser.clean(rawLog!!).joinToString("\n"))
+                                    f.writeText(loaded!!.lines.joinToString("\n"))
                                     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
                                     ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                                         type = "text/plain"
@@ -280,15 +301,31 @@ fun RunScreen(
                         }
                     }
                 }
-                if (rawLog != null) {
+                if (loaded != null) {
+                    val shownStep = if (pickedStep != null) stepSection else failedSection
                     val lines = when (view) {
-                        LogView.ERRORS -> failedSection?.let { LogParser.errorExcerpt(it, 2, 300) }
-                            ?: sections.flatMap { it.lines }.filter { it.kind == LineKind.ERROR }
-                        LogView.STEP -> (failedSection ?: sections.lastOrNull())?.lines ?: emptyList()
-                        LogView.ALL -> sections.flatMap { it.lines }.takeLast(3000)
+                        LogView.ERRORS -> {
+                            val excerpt = failedSection?.let { LogParser.errorExcerpt(it, 2, 300) }
+                                ?: sections.flatMap { it.lines }.filter { it.kind == LineKind.ERROR }
+                            // Only a generic "exit code 1" line? Show what the step printed before failing.
+                            if (excerpt.count { it.kind == LineKind.ERROR } <= 2 && failedSection != null) {
+                                val tail = failedSection.lines.takeLast(80)
+                                (excerpt + tail).distinctBy { it.index }.sortedBy { it.index }
+                            } else excerpt
+                        }
+                        LogView.STEP -> shownStep?.lines?.takeLast(5000) ?: emptyList()
+                        LogView.ALL -> sections.flatMap { it.lines }.takeLast(5000)
                     }
-                    if (lines.isEmpty()) item { Text("No error lines found. Try Failed step or Full.", color = Stellar.Dim) }
-                    if (view == LogView.STEP && failedSection != null) item { Label("Step: ${failedSection.title}", Stellar.Dim) }
+                    if (lines.isEmpty()) item {
+                        Text(if (view == LogView.STEP) "No output found for this step. Try Full." else "No error lines found. Try Failed step or Full.", color = Stellar.Dim)
+                    }
+                    if (view != LogView.ALL && (if (view == LogView.STEP) shownStep else failedSection) != null) item {
+                        Label((if (view == LogView.STEP) shownStep else failedSection)!!.title, Stellar.Dim)
+                    }
+                    if (view == LogView.ERRORS && failedSection != null && lines.size > 3) item {
+                        Text("Error lines in red. The step's last output is shown too, since the real cause is usually just above the exit code.",
+                            color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+                    }
                     items(lines, key = { "l-${it.index}" }) { l ->
                         val c = when (l.kind) {
                             LineKind.ERROR -> Stellar.Red
