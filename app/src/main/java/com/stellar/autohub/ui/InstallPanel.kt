@@ -149,3 +149,84 @@ fun InstallPanel(repo: RepoProfile, runId: Long = 0, expectedVersion: String? = 
         )
     }
 }
+
+/** Release files for any kind of project (Windows .exe, zips…): share to another device or save to the phone. */
+@Composable
+fun ReleaseFilesPanel(repo: RepoProfile, runId: Long = 0, refreshKey: Any? = null) {
+    val app = AutoHubApp.instance
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var release by remember { mutableStateOf<com.stellar.autohub.data.GhRelease?>(null) }
+    var loaded by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var pending by remember { mutableStateOf<java.io.File?>(null) }
+
+    LaunchedEffect(repo.id, refreshKey) {
+        release = try { app.api.latestRelease(repo.owner, repo.name) } catch (e: Exception) { null }
+        loaded = true
+    }
+    val save = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        val f = pending; pending = null
+        if (uri != null && f != null) try {
+            ctx.contentResolver.openOutputStream(uri)?.use { out -> f.inputStream().use { it.copyTo(out) } }; ctx.toast("Saved")
+        } catch (e: Exception) { ctx.toast(e.message ?: "Couldn't save") }
+    }
+
+    fun fetch(asset: com.stellar.autohub.data.GhAsset, share: Boolean) {
+        busy = "Downloading ${asset.name}…"
+        scope.launch {
+            try {
+                val dir = java.io.File(ctx.cacheDir, "shared").apply { mkdirs() }
+                val f = java.io.File(dir, asset.name.replace('/', '_'))
+                app.api.download(asset.url, "application/octet-stream", f) { done, _ ->
+                    busy = "Downloading ${asset.name}… ${com.stellar.autohub.ci.Cleanup.size(done)}"
+                }
+                if (share) {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
+                    ctx.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "application/octet-stream"
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }, "Send ${asset.name}"))
+                } else { pending = f; save.launch(asset.name) }
+            } catch (e: Exception) { ctx.toast(e.message ?: "Download failed") } finally { busy = null }
+        }
+    }
+
+    Panel(accent = Stellar.Violet) {
+        Label("Release files", Stellar.Violet)
+        val r = release
+        when {
+            !loaded -> Busy("Checking releases…")
+            r == null -> Text("No releases yet. Builds on main publish one when the version is new.", color = Stellar.Dim)
+            r.assets.isEmpty() -> Text("${r.tag_name} has no files attached.", color = Stellar.Amber)
+            else -> {
+                Text("Latest: ${r.tag_name}", style = MaterialTheme.typography.titleMedium)
+                r.assets.forEach { a ->
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            MonoText(a.name)
+                            Text(com.stellar.autohub.ci.Cleanup.size(a.size), color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(enabled = busy == null, onClick = { fetch(a, true) }) { Text("Send") }
+                        TextButton(enabled = busy == null, onClick = { fetch(a, false) }) { Text("Save") }
+                    }
+                }
+                Text("Send it to your PC (Nearby Share, email, cloud drive…), or grab it on the PC from the repo's Releases page.",
+                    color = Stellar.Dim, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        busy?.let { Busy(it) }
+    }
+}
+
+/** Android repos get the install card; everything else gets the release files card. */
+@Composable
+fun ReleaseCard(repo: RepoProfile, runId: Long = 0, expectedVersion: String? = null, refreshKey: Any? = null) {
+    val kind = com.stellar.autohub.upload.ProjectKind.of(repo.kind)
+    if (kind.isAndroid || (kind == com.stellar.autohub.upload.ProjectKind.UNKNOWN && repo.packageName.isNotBlank()))
+        InstallPanel(repo, runId, expectedVersion, refreshKey)
+    else ReleaseFilesPanel(repo, runId, refreshKey)
+}

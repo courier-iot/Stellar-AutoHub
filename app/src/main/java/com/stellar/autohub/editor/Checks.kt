@@ -20,6 +20,8 @@ object Checks {
         when {
             n.endsWith(".kt") || n.endsWith(".kts") -> brackets(text, kotlin = true)?.let { out += CheckIssue(path, it.first, it.second) }
             n.endsWith(".java") || n.endsWith(".gradle") -> brackets(text, kotlin = false)?.let { out += CheckIssue(path, it.first, it.second) }
+            n.endsWith(".js") || n.endsWith(".mjs") || n.endsWith(".cjs") || n.endsWith(".ts") || n.endsWith(".jsx") || n.endsWith(".tsx") ->
+                brackets(text, kotlin = false, js = true)?.let { out += CheckIssue(path, it.first, it.second) }
             n.endsWith(".json") -> json(text)?.let { out += CheckIssue(path, it.first, "Invalid JSON: ${it.second}") }
             n.endsWith(".yml") || n.endsWith(".yaml") -> {
                 yamlTabs(text)?.let { out += CheckIssue(path, it, "YAML can't use tabs for indentation. Use spaces.") }
@@ -38,12 +40,13 @@ object Checks {
     private const val CODE = 0
     private const val STR = 1
     private const val RAW = 2
+    private const val TPL = 3 // JS `template ${...}`
 
     /**
      * Returns (line, message) for the first bracket problem, or null.
      * Understands comments, strings, char literals, Kotlin raw strings and ${...} templates.
      */
-    fun brackets(text: String, kotlin: Boolean): Pair<Int, String>? {
+    fun brackets(text: String, kotlin: Boolean, js: Boolean = false): Pair<Int, String>? {
         data class Open(val ch: Char, val line: Int, val returnMode: Int = -1)
         val stack = ArrayList<Open>()
         var mode = CODE
@@ -51,6 +54,7 @@ object Checks {
         var i = 0
         var blockDepth = 0
         val pairs = mapOf(')' to '(', ']' to '[', '}' to '{')
+        var lastSig = '\u0000' // last non-space code character (JS regex-literal detection)
         while (i < text.length) {
             val c = text[i]
             val next = if (i + 1 < text.length) text[i + 1] else '\u0000'
@@ -66,6 +70,11 @@ object Checks {
                     c == '\n' -> return line - 1 to "String not closed (missing \")."
                     kotlin && c == '$' && next == '{' -> { stack += Open('{', line, STR); mode = CODE; i++ }
                 }
+                mode == TPL -> when {
+                    c == '\\' -> i++
+                    c == '`' -> mode = CODE
+                    c == '$' && next == '{' -> { stack += Open('{', line, TPL); mode = CODE; i++ }
+                }
                 mode == RAW -> when {
                     c == '"' && text.startsWith("\"\"\"", i) -> {
                         var j = i + 3
@@ -77,8 +86,27 @@ object Checks {
                 else -> when {
                     c == '/' && next == '/' -> { while (i < text.length && text[i] != '\n') i++; continue }
                     c == '/' && next == '*' -> { blockDepth = 1; i++ }
+                    js && c == '`' -> mode = TPL
+                    js && c == '/' && (lastSig == '\u0000' || lastSig in "(,=:[!&|?{};+-*%<>~^") -> {
+                        // regex literal like /[)}]+/g : skip it, unless it runs to the end of the line (then it was division)
+                        var j = i + 1
+                        var inClass = false
+                        while (j < text.length && text[j] != '\n') {
+                            val d = text[j]
+                            if (d == '\\') { j += 2; continue }
+                            if (d == '[') inClass = true else if (d == ']') inClass = false
+                            else if (d == '/' && !inClass) break
+                            j++
+                        }
+                        if (j < text.length && text[j] == '/') i = j
+                    }
                     kotlin && text.startsWith("\"\"\"", i) -> { mode = RAW; i += 2 }
                     c == '"' -> mode = STR
+                    js && c == '\'' -> {
+                        var j = i + 1
+                        while (j < text.length && text[j] != '\'' && text[j] != '\n') { if (text[j] == '\\') j++; j++ }
+                        if (j < text.length && text[j] == '\'') i = j
+                    }
                     c == '\'' -> {
                         // char literal ('a', '\n') or a Groovy 'string': skip to the closing quote on this line
                         var j = i + 1
@@ -97,11 +125,13 @@ object Checks {
                     }
                 }
             }
+            if (mode == CODE && blockDepth == 0 && i < text.length && !text[i].isWhitespace()) lastSig = text[i]
             i++
         }
         if (blockDepth > 0) return line to "Comment /* … not closed."
         if (mode == STR) return line to "String not closed (missing \")."
         if (mode == RAW) return line to "Raw string \"\"\" not closed."
+        if (mode == TPL) return line to "Template string ` not closed."
         val top = stack.lastOrNull() ?: return null
         val close = when (top.ch) { '(' -> ')'; '[' -> ']'; else -> '}' }
         return top.line to "'${top.ch}' opened here is never closed (missing '$close')."

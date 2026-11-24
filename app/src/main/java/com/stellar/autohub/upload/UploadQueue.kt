@@ -101,7 +101,7 @@ class QueueWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
                 val remote = app.committer.loadRemote(repo)
                 val plan = Planner.plan(
                     payload, remote,
-                    ignore = PathRules.parsePatterns(app.prefs.ignorePatterns),
+                    ignore = ProjectKinds.ignoreFor(app.prefs.ignorePatterns, ProjectKind.of(repo.kind).let { if (it == ProjectKind.UNKNOWN) ProjectKinds.detect(payload) else it }),
                     protectedPatterns = PathRules.parsePatterns(repo.protectedPatterns),
                     strip = m.stripOverride, autoStrip = app.prefs.autoStrip,
                 ).excluding(m.excluded.toSet())

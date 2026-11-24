@@ -20,6 +20,8 @@ object LogParser {
         "AssertionError", "AssertionFailedError", "ComparisonFailure", "expected:<", "There were failing tests",
         "tests completed,", "Test failed", "CMake Error", "make: ***", "ninja: build stopped", "Segmentation fault",
         "No such file or directory", "command not found", "Permission denied",
+        "npm ERR!", "npm error", "SyntaxError", "TypeError", "ReferenceError", "Cannot find module", "error TS",
+        "⨯", "ELIFECYCLE", "Module not found", "error CS", "error MSB", "Traceback (most recent call last)",
     )
     private val warnHints = listOf("##[warning]", "w: ", "warning:")
 

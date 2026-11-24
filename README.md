@@ -67,3 +67,15 @@ The secrets screen reads the workflows, lists every `secrets.NAME` they use, and
 - **New app from template**, **share/save the repo as a zip**, **build stats**, **mute per repo**, and a **home-screen widget**.
 - **Display:** text size, high contrast, pure black, and the accent color.
 - **Expiring OAuth tokens renew automatically** (sign in once with the code after updating).
+
+## Windows & other projects (v2.2.0)
+
+- AutoHub detects the project kind (Android, Electron, Node, .NET, Python, C/C++) and adapts:
+  - **Ignore rules per kind.** Electron keeps `build/` (icons) and skips `node_modules/`, `dist/` and `out/`. .NET skips `bin/` and `obj/`.
+  - **Release files card** for non-Android repos: send or save the `.exe` or zip from the latest release.
+  - **Tappable errors** from Windows runners (`D:\a\…`), TypeScript (`file.ts(12,5)`) and Node stack traces.
+  - **JavaScript/TypeScript** highlighting and bracket checks (strings, `template ${}` and regex literals included).
+  - **Version bump** works with `package.json` too.
+- **New app wizard → "What goes in it?":** Android starter, Windows starter (Electron), your own zip or folder (uploaded as the first commit), or an empty repo.
+- **Electron workflow:** builds on `windows-latest` with electron-builder (or Electron Forge) and releases `vX.Y.Z` from `package.json` on `main`, with an installer and a portable `.exe`.
+- **Workflow health** can add the standard build workflow to repos that have none.

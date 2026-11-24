@@ -85,7 +85,7 @@ class MainActivity : FragmentActivity() {
                         )
                     }
                     composable("newProject") {
-                        NewProjectScreen(onBack = { nav.popBackStack() }, onCreated = { id -> nav.popBackStack(); nav.navigate("repo/$id") },
+                        NewProjectScreen(vm = vm, onBack = { vm.wizardPayload.value = null; nav.popBackStack() }, onCreated = { id -> nav.popBackStack(); nav.navigate("repo/$id") },
                             openKeys = { nav.navigate("keys") })
                     }
                     composable("files/{id}") { e ->

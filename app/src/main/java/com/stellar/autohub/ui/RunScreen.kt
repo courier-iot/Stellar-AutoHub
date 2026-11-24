@@ -195,7 +195,7 @@ fun RunScreen(
             }
 
             if (r.status == "completed" && r.conclusion == "success") item {
-                InstallPanel(repo, runId = r.id, expectedVersion = entry?.version?.takeIf { it.isNotEmpty() }, refreshKey = r.id)
+                ReleaseCard(repo, runId = r.id, expectedVersion = entry?.version?.takeIf { it.isNotEmpty() }, refreshKey = r.id)
             }
 
             // Jobs + steps

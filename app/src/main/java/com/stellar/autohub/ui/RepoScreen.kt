@@ -76,6 +76,17 @@ fun RepoScreen(
     var zipFile by remember { mutableStateOf<java.io.File?>(null) }
     val myQueue = queue.filter { it.repoId == repoId }
 
+    // Learn what kind of project this is (Android, Electron, …) from the repo's files
+    LaunchedEffect(repoId) {
+        if (repo.kind.isEmpty()) try {
+            val tree = app.blobs.tree(repo).filter { it.type == "blob" }.map { it.path }
+            val kind = com.stellar.autohub.upload.ProjectKinds.detect(tree) { p ->
+                if (p.endsWith("package.json")) app.api.rawFile(repo.owner, repo.name, p, repo.branch) else null
+            }
+            if (kind != com.stellar.autohub.upload.ProjectKind.UNKNOWN) app.store.upsertRepo(repo.copy(kind = kind.id))
+        } catch (_: Exception) { }
+    }
+
     LaunchedEffect(repoId, refresh) {
         runsError = null
         try { runs = app.api.recentRuns(repo.owner, repo.name, repo.branch) } catch (e: Exception) { runsError = e.message }
@@ -170,7 +181,8 @@ fun RepoScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(repo.owner, color = Stellar.Dim, modifier = Modifier.weight(1f))
+                Text(repo.owner + (com.stellar.autohub.upload.ProjectKind.of(repo.kind).takeIf { it != com.stellar.autohub.upload.ProjectKind.UNKNOWN }?.let { " · ${it.label}" } ?: ""),
+                    color = Stellar.Dim, modifier = Modifier.weight(1f))
                 if (repo.muted) Chip("MUTED", Stellar.Dim)
                 Spacer(Modifier.width(6.dp))
                 Box(Modifier.clickable { openBranches() }) { Chip("⑂ ${repo.branch}", if (repo.branch == repo.baseBranch) Stellar.Violet else Stellar.Amber) }
@@ -258,7 +270,7 @@ fun RepoScreen(
                 }
             }
 
-            InstallPanel(repo, refreshKey = refresh)
+            ReleaseCard(repo, refreshKey = refresh)
 
             Panel {
                 Label("Workflow health")

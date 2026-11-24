@@ -38,12 +38,13 @@ class Plan(
     val requestedDeletes: Set<String> = emptySet(),
     /** Pre-commit problems (unbalanced brackets, invalid YAML/JSON/XML) in new/changed files. */
     val checks: List<com.stellar.autohub.editor.CheckIssue> = emptyList(),
+    val kind: ProjectKind = ProjectKind.UNKNOWN,
 ) {
     /** Same plan without some files (e.g. ones the user excluded after a secret warning). */
     fun excluding(paths: Set<String>): Plan = if (paths.isEmpty()) this else Plan(
         files.filter { it.path !in paths }, deletable, skipped, strippedRoot, canStrip, looksLikeProject, version,
         applicationId, warnings, remoteHead, remoteTreeSha, leaks.filter { it.path !in paths }, gradlePath, requestedDeletes,
-        checks.filter { it.path !in paths },
+        checks.filter { it.path !in paths }, kind,
     )
 
     val added get() = files.count { it.status == FileStatus.ADDED }
@@ -139,17 +140,27 @@ object Planner {
 
         val looksLikeProject = payload.structured && uploaded.any { it in projectMarkers || it.startsWith(".github/") }
 
-        // 5. Detect version / app id from the uploaded gradle file
+        // 5. Detect version / app id from the uploaded gradle file (Android) or package.json (Electron/Node)
         val gradle = PathRules.GRADLE_FILES.firstNotNullOfOrNull { byPath[it] }?.let { String(it.bytes) }
-        val version = gradle?.let { PathRules.versionName(it) }
+        val pkgJson = byPath["package.json"]?.let { String(it.bytes) }
+        val gradleVersion = gradle?.let { PathRules.versionName(it) }
+        val version = gradleVersion ?: pkgJson?.let { ProjectKinds.packageJsonVersion(it) }
+        val versionPath = when {
+            gradleVersion != null -> PathRules.GRADLE_FILES.firstOrNull { byPath.containsKey(it) }
+            version != null -> "package.json"
+            else -> null
+        }
         val appId = gradle?.let { PathRules.applicationId(it) }
+        val kind = ProjectKinds.detect(uploaded) { p -> byPath[p]?.let { PathRules.asText(it.bytes) } }
+            .let { if (it == ProjectKind.UNKNOWN) ProjectKinds.detect(remoteFiles.keys) { null } else it }
 
         // 6. Warnings
         if (remote.truncated) warnings += "This repo is huge, so GitHub sent a partial file list. Deletions are turned off for safety."
         if (canStrip != null && !doStrip) warnings += "Everything is inside \"$canStrip/\". If that's the project folder, turn on Strip top folder."
         val hasWorkflow = uploaded.any { it.startsWith(".github/workflows/") } ||
             remoteFiles.keys.any { it.startsWith(".github/workflows/") }
-        if (!hasWorkflow) warnings += "No .github/workflows found in the upload or the repo, so nothing will build."
+        if (!hasWorkflow) warnings += "No .github/workflows found in the upload or the repo, so nothing will build." +
+            " (Repo screen → Workflow health can add one.)"
         if (planned.any { it.path.startsWith(".github/workflows/") && it.status != FileStatus.UNCHANGED })
             warnings += "Workflow files change in this upload. Your token needs the 'workflow' permission."
         if (payload.structured && !looksLikeProject && planned.isNotEmpty())
@@ -168,7 +179,8 @@ object Planner {
             remoteHead = remote.head,
             remoteTreeSha = remote.treeSha,
             leaks = LeakScanner.scan(planned),
-            gradlePath = PathRules.GRADLE_FILES.firstOrNull { byPath.containsKey(it) },
+            gradlePath = versionPath,
+            kind = kind,
             checks = planned.filter { it.status != FileStatus.UNCHANGED }.flatMap { f ->
                 PathRules.asText(f.bytes)?.let { com.stellar.autohub.editor.Checks.check(f.path, it) } ?: emptyList()
             },

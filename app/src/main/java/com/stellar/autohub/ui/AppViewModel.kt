@@ -78,6 +78,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val sharedUris: StateFlow<List<Uri>> = _sharedUris
 
     private var remote: RemoteState? = null
+
+    /** Files picked inside the new-app wizard (kept here so they survive visiting other screens). */
+    val wizardPayload = MutableStateFlow<Payload?>(null)
+
+    fun loadWizardFiles(uris: List<Uri>, tree: Uri?, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                wizardPayload.value = withContext(Dispatchers.IO) {
+                    if (tree != null) PayloadReader.fromTree(app, tree) else PayloadReader.fromUris(app, uris, "")
+                }
+            } catch (e: Exception) { onError(e.message ?: "Couldn't read those files") }
+        }
+    }
     private var pendingQueued: QueuedUpload? = null
 
     fun setShared(uris: List<Uri>) { _sharedUris.value = uris }
@@ -171,7 +184,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val plan = withContext(Dispatchers.Default) {
                 Planner.plan(
                     p, r,
-                    ignore = PathRules.parsePatterns(app.prefs.ignorePatterns),
+                    ignore = ProjectKinds.ignoreFor(app.prefs.ignorePatterns, kindFor(repo, p)),
                     protectedPatterns = PathRules.parsePatterns(repo.protectedPatterns),
                     strip = strip,
                     autoStrip = app.prefs.autoStrip,
@@ -201,8 +214,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The repo's saved kind, or detected from the upload (and remembered). */
+    private fun kindFor(repo: RepoProfile, p: Payload): ProjectKind {
+        val saved = ProjectKind.of(repo.kind)
+        if (saved != ProjectKind.UNKNOWN) return saved
+        val k = ProjectKinds.detect(p)
+        if (k != ProjectKind.UNKNOWN) app.store.upsertRepo(repo.copy(kind = k.id))
+        return k
+    }
+
     private fun Plan.withoutLeaks() = Plan(files, deletable, skipped, strippedRoot, canStrip, looksLikeProject, version,
-        applicationId, warnings, remoteHead, remoteTreeSha, emptyList(), gradlePath, requestedDeletes, checks)
+        applicationId, warnings, remoteHead, remoteTreeSha, emptyList(), gradlePath, requestedDeletes, checks, kind)
 
     fun setMode(m: UploadMode) { _preview.value = _preview.value?.copy(mode = m) }
     fun setMessage(m: String) { _preview.value = _preview.value?.copy(message = m) }
@@ -241,7 +263,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             n == gp || (plan.strippedRoot != null && n == "${plan.strippedRoot}/$gp")
         }
         val files = p.files.map { f ->
-            if (match(f.path)) RawFile(f.path, PathRules.bumpGradle(String(f.bytes), target).toByteArray()) else f
+            if (match(f.path)) RawFile(f.path, (if (gp.endsWith("package.json")) ProjectKinds.bumpPackageJson(String(f.bytes), target)
+                else PathRules.bumpGradle(String(f.bytes), target)).toByteArray()) else f
         }
         _payload.value = Payload(files, p.label, p.structured)
         val oldDefault = plan.version?.let { "v$it via Stellar AutoHub" }

@@ -7,14 +7,15 @@ class Span(val start: Int, val end: Int, val tok: Tok)
 /** Small regex-based syntax highlighter. Fast enough to run on every keystroke for normal source files. */
 object Highlighter {
 
-    enum class Lang { KOTLIN, JAVA, XML, YAML, JSON, GRADLE_GROOVY, MARKDOWN, PROPERTIES, SHELL, PLAIN }
+    enum class Lang { KOTLIN, JAVA, JS, XML, YAML, JSON, GRADLE_GROOVY, MARKDOWN, PROPERTIES, SHELL, PLAIN }
 
     fun langFor(path: String): Lang {
         val n = path.lowercase()
         return when {
             n.endsWith(".kt") || n.endsWith(".kts") -> Lang.KOTLIN
             n.endsWith(".java") -> Lang.JAVA
-            n.endsWith(".xml") || n.endsWith(".html") || n.endsWith(".svg") -> Lang.XML
+            n.endsWith(".js") || n.endsWith(".mjs") || n.endsWith(".cjs") || n.endsWith(".ts") || n.endsWith(".jsx") || n.endsWith(".tsx") -> Lang.JS
+            n.endsWith(".xml") || n.endsWith(".html") || n.endsWith(".htm") || n.endsWith(".svg") -> Lang.XML
             n.endsWith(".yml") || n.endsWith(".yaml") -> Lang.YAML
             n.endsWith(".json") -> Lang.JSON
             n.endsWith(".gradle") -> Lang.GRADLE_GROOVY
@@ -37,6 +38,19 @@ object Highlighter {
         "final", "abstract", "void", "int", "long", "boolean", "double", "float", "char", "byte", "short", "new", "return",
         "if", "else", "for", "while", "do", "switch", "case", "default", "break", "continue", "try", "catch", "finally",
         "throw", "throws", "null", "true", "false", "this", "super", "synchronized", "volatile", "instanceof", "var", "record",
+    )
+    private val jsKw = setOf(
+        "const", "let", "var", "function", "return", "if", "else", "for", "while", "do", "switch", "case", "default",
+        "break", "continue", "try", "catch", "finally", "throw", "new", "class", "extends", "super", "this", "import",
+        "export", "from", "as", "async", "await", "yield", "typeof", "instanceof", "in", "of", "delete", "void",
+        "null", "undefined", "true", "false", "interface", "type", "enum", "implements", "public", "private",
+        "protected", "readonly", "static", "get", "set", "require", "module",
+    )
+    private val jsStyle = Regex(
+        "(?<comment>//[^\\n]*|/\\*[\\s\\S]*?(?:\\*/|$))" +
+            "|(?<string>`(?:[^`\\\\]|\\\\.)*`?|\"(?:[^\"\\\\\\n]|\\\\.)*\"?|'(?:[^'\\\\\\n]|\\\\.)*'?)" +
+            "|(?<num>\\b(?:0x[0-9A-Fa-f_]+|\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?n?)\\b)" +
+            "|(?<word>\\b[A-Za-z_$][\\w$]*\\b)"
     )
     private val groovyKw = javaKw + setOf("def", "apply", "plugin", "plugins", "android", "dependencies", "implementation", "id")
 
@@ -102,6 +116,19 @@ object Highlighter {
                             if (w in kw) out += Span(r.first, r.last + 1, Tok.KEYWORD)
                             else if (w[0].isUpperCase()) out += Span(r.first, r.last + 1, Tok.TYPE)
                         }
+                    }
+                }
+            }
+            Lang.JS -> for (m in jsStyle.findAll(text)) {
+                val r = m.range
+                when {
+                    m.groups["comment"] != null -> out += Span(r.first, r.last + 1, Tok.COMMENT)
+                    m.groups["string"] != null -> out += Span(r.first, r.last + 1, Tok.STRING)
+                    m.groups["num"] != null -> out += Span(r.first, r.last + 1, Tok.NUMBER)
+                    m.groups["word"] != null -> {
+                        val w = m.value
+                        if (w in jsKw) out += Span(r.first, r.last + 1, Tok.KEYWORD)
+                        else if (w[0].isUpperCase()) out += Span(r.first, r.last + 1, Tok.TYPE)
                     }
                 }
             }

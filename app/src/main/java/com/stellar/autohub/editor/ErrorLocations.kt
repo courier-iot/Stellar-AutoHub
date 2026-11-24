@@ -12,7 +12,26 @@ object ErrorLocations {
         """(?:file://)?/home/runner/work/[^/\s]+/[^/\s]+/([^\s:()]+\.[A-Za-z]+)(?::(\d+)(?::(\d+))?|: \((\d+), ?(\d+)\))?:?\s*(.*)"""
     )
 
+    // Windows runners: D:\a\Repo\Repo\src\main.js:12:5  or  D:\a\Repo\Repo\Foo.cs(12,5): error CS1002
+    private val winLoc = Regex(
+        """[A-Za-z]:[\\/]a[\\/][^\\/\s]+[\\/][^\\/\s]+[\\/]([^\s:()"']+\.[A-Za-z]+)(?::(\d+)(?::(\d+))?|\((\d+),\s?(\d+)\))?:?\s*(.*)"""
+    )
+    // TypeScript / ESLint style, relative: src/main.ts(12,5): error TS2304: …  or  src/main.ts:12:5 - error
+    private val relLoc = Regex("""^\s*([\w.@/-]+\.(?:ts|tsx|js|jsx|mjs|cjs|vue|css|json))(?:\((\d+),(\d+)\)|:(\d+):(\d+))\s*[:-]?\s*(.*)""")
+
     fun find(line: String): ErrorLocation? {
+        winLoc.find(line)?.let { m ->
+            val g = m.groupValues
+            val ln = g[2].toIntOrNull() ?: g[4].toIntOrNull() ?: 0
+            val col = g[3].toIntOrNull() ?: g[5].toIntOrNull() ?: 0
+            return ErrorLocation(g[1].replace('\\', '/'), ln, col, g[6].removePrefix("error").trim(' ', ':', ')'))
+        }
+        relLoc.find(line)?.let { m ->
+            val g = m.groupValues
+            val ln = g[2].toIntOrNull() ?: g[4].toIntOrNull() ?: 0
+            val col = g[3].toIntOrNull() ?: g[5].toIntOrNull() ?: 0
+            if (ln > 0 && !g[1].startsWith("node_modules/")) return ErrorLocation(g[1].removePrefix("./"), ln, col, g[6].trim())
+        }
         val m = loc.find(line) ?: return null
         val g = m.groupValues
         val ln = g[2].toIntOrNull() ?: g[4].toIntOrNull() ?: 0

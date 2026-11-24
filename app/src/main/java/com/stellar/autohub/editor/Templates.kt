@@ -306,4 +306,225 @@ object Templates {
                     gh release create "${'$'}TAG" "$apkName-${'$'}TAG.apk" --title "${'$'}TAG" --notes "" --target "${'$'}GITHUB_SHA"
                   fi
     """.trimIndent() + "\n"
+
+    // ---------------- Electron (Windows desktop) ----------------
+
+    fun npmName(appName: String) = appName.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "app" }
+
+    fun electronFiles(appName: String, appId: String, repoName: String): List<RawFile> {
+        val esc = appName.replace("\\", "\\\\").replace("\"", "\\\"")
+        val html = appName.replace("&", "&amp;").replace("<", "&lt;")
+        fun f(p: String, t: String) = RawFile(p, t.trimIndent().trimStart('\n').toByteArray())
+        return listOf(
+            f("package.json", """
+                {
+                  "name": "${npmName(appName)}",
+                  "productName": "$esc",
+                  "version": "1.0.0",
+                  "description": "$esc, made with Stellar AutoHub",
+                  "author": "Stellar",
+                  "main": "main.js",
+                  "scripts": {
+                    "start": "electron .",
+                    "dist": "electron-builder --win --publish never"
+                  },
+                  "build": {
+                    "appId": "$appId",
+                    "productName": "$esc",
+                    "directories": { "output": "dist", "buildResources": "build" },
+                    "win": { "target": ["nsis", "portable"] },
+                    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+                  },
+                  "devDependencies": {
+                    "electron": "^33.2.1",
+                    "electron-builder": "^25.1.8"
+                  }
+                }
+            """),
+            f("main.js", """
+                // Main process: creates the window. Runs in Node.js.
+                const { app, BrowserWindow, Menu } = require('electron');
+                const path = require('path');
+
+                function createWindow() {
+                  const win = new BrowserWindow({
+                    width: 1100,
+                    height: 720,
+                    backgroundColor: '#070A14',
+                    title: '$esc',
+                    webPreferences: {
+                      preload: path.join(__dirname, 'preload.js'),
+                      contextIsolation: true,
+                      nodeIntegration: false,
+                    },
+                  });
+                  Menu.setApplicationMenu(null);
+                  win.loadFile('index.html');
+                }
+
+                app.whenReady().then(() => {
+                  createWindow();
+                  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+                });
+
+                app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+            """),
+            f("preload.js", """
+                // Safely exposes a few values to the page (no full Node access in the window).
+                const { contextBridge } = require('electron');
+
+                contextBridge.exposeInMainWorld('stellar', {
+                  versions: { electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome },
+                });
+            """),
+            f("index.html", """
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                  <meta charset="UTF-8" />
+                  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+                  <title>$html</title>
+                  <link rel="stylesheet" href="styles.css" />
+                </head>
+                <body>
+                  <main>
+                    <h1>$html</h1>
+                    <p>Built with Stellar AutoHub</p>
+                    <button id="launch">Launch</button>
+                    <p id="info" class="dim"></p>
+                  </main>
+                  <script src="renderer.js"></script>
+                </body>
+                </html>
+            """),
+            f("renderer.js", """
+                // Runs in the window. Talk to Node through window.stellar (see preload.js).
+                let taps = 0;
+                document.getElementById('launch').addEventListener('click', (e) => {
+                  taps++;
+                  e.target.textContent = 'Launched ' + taps + '×';
+                });
+                const v = window.stellar.versions;
+                document.getElementById('info').textContent = 'Electron ' + v.electron + ' · Node ' + v.node;
+            """),
+            f("styles.css", """
+                html, body { margin: 0; height: 100%; }
+                body {
+                  background: linear-gradient(#0A0F24, #070A14, #0C0718);
+                  color: #E9ECFF;
+                  font-family: 'Segoe UI', system-ui, sans-serif;
+                  display: flex; align-items: center; justify-content: center;
+                }
+                main { text-align: center; }
+                h1 { font-size: 34px; margin: 0 0 8px; }
+                .dim, p { color: #A3ACD6; }
+                button {
+                  margin-top: 20px; padding: 12px 28px; border-radius: 24px; border: none;
+                  background: #34E7FF; color: #00151A; font-size: 16px; font-weight: 600; cursor: pointer;
+                }
+                button:hover { filter: brightness(1.1); }
+            """),
+            f(".gitignore", """
+                node_modules/
+                dist/
+                out/
+                *.log
+                .DS_Store
+            """),
+            f(".github/workflows/build.yml", electronWorkflow(repoName)),
+            f("README.md", """
+                # $appName
+
+                Windows desktop app (Electron) made with **Stellar AutoHub**.
+
+                - Every push builds the app on GitHub's Windows machines. Pushes to `main` also publish a release tagged `vX.Y.Z`
+                  from the `version` in `package.json`, with an installer (`Setup`) and a portable `.exe`.
+                - Run it locally: `npm install` then `npm start`.
+                - Windows SmartScreen may warn the first time because the app isn't code-signed. Click **More info → Run anyway**.
+            """),
+        )
+    }
+
+    /** Windows build for Electron (electron-builder or Electron Forge). Releases only from main, tagged vX.Y.Z. */
+    fun electronWorkflow(name: String): String = """
+        name: Build Windows app
+
+        on:
+          push:
+            branches: ['**']
+          workflow_dispatch:
+
+        permissions:
+          contents: write
+
+        jobs:
+          build:
+            runs-on: windows-latest
+            defaults:
+              run:
+                shell: bash
+            steps:
+              - name: Checkout
+                uses: actions/checkout@v4
+
+              - name: Set up Node.js
+                uses: actions/setup-node@v4
+                with:
+                  node-version: '20'
+
+              - name: Install dependencies
+                run: |
+                  if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+              - name: Build Windows app
+                env:
+                  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+                run: |
+                  if grep -q '"@electron-forge/cli"' package.json; then
+                    npx electron-forge make --platform win32
+                  else
+                    npx --yes electron-builder --win --publish never
+                  fi
+
+              - name: Read version
+                id: ver
+                run: echo "version=${'$'}(node -p "require('./package.json').version")" >> "${'$'}GITHUB_OUTPUT"
+
+              - name: Collect files
+                run: |
+                  shopt -s nullglob globstar
+                  mkdir -p release
+                  for f in dist/*.exe dist/*.msi dist/*.zip out/make/**/*.exe out/make/**/*.msi out/make/**/*.zip; do cp "${'$'}f" release/; done
+                  ls -la release
+                  if [ -z "${'$'}(ls -A release)" ]; then
+                    echo "::error::No .exe, .msi or .zip found in dist/ or out/make/. Check the 'Build Windows app' step output."
+                    exit 1
+                  fi
+
+              - name: Upload artifact
+                uses: actions/upload-artifact@v4
+                with:
+                  name: $name-v${'$'}{{ steps.ver.outputs.version }}
+                  path: release/*
+
+              - name: Publish release
+                if: github.ref == 'refs/heads/main'
+                env:
+                  GH_TOKEN: ${'$'}{{ github.token }}
+                  VER: ${'$'}{{ steps.ver.outputs.version }}
+                run: |
+                  TAG="v${'$'}VER"
+                  if gh release view "${'$'}TAG" >/dev/null 2>&1; then
+                    echo "::warning::Release ${'$'}TAG already exists. Bump version in package.json to publish a new release."
+                  else
+                    gh release create "${'$'}TAG" release/* --title "${'$'}TAG" --notes "" --target "${'$'}GITHUB_SHA"
+                  fi
+    """.trimIndent() + "\n"
+
+    /** A matching build workflow for a project kind, or null if AutoHub has no template for it. */
+    fun workflowFor(kind: com.stellar.autohub.upload.ProjectKind, repoName: String): String? = when (kind) {
+        com.stellar.autohub.upload.ProjectKind.ANDROID -> workflow(repoName)
+        com.stellar.autohub.upload.ProjectKind.ELECTRON -> electronWorkflow(repoName)
+        else -> null
+    }
 }

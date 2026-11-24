@@ -15,18 +15,24 @@ class HealthIssue(
     val to: String? = null,
 )
 
-class HealthReport(val issues: List<HealthIssue>, val texts: Map<String, String>, val actionsChecked: Int) {
-    val fixable get() = issues.filter { it.from != null && it.to != null }
+class HealthReport(
+    val issues: List<HealthIssue>,
+    val texts: Map<String, String>,
+    val actionsChecked: Int,
+    /** A ready build workflow to add when the repo has none (Android / Electron). */
+    val addWorkflow: String? = null,
+) {
+    val fixable get() = issues.filter { (it.from != null && it.to != null) || (it.file == ".github/workflows/build.yml" && addWorkflow != null) }
 
     /** A loose-files upload containing the fixed workflow files, ready for the normal preview. */
     fun fixPayload(): Payload? {
-        val byFile = fixable.groupBy { it.file }
-        if (byFile.isEmpty()) return null
+        val byFile = fixable.filter { it.from != null }.groupBy { it.file }
+        if (byFile.isEmpty() && addWorkflow == null) return null
         val files = byFile.mapNotNull { (path, issues) ->
             var t = texts[path] ?: return@mapNotNull null
             issues.forEach { t = t.replace(it.from!!, it.to!!) }
             RawFile(path, t.toByteArray())
-        }
+        } + listOfNotNull(addWorkflow?.let { RawFile(".github/workflows/build.yml", it.toByteArray()) })
         return Payload(files, "Workflow updates", structured = false)
     }
 }
@@ -89,7 +95,17 @@ object WorkflowHealth {
             }
         } catch (_: Exception) { }
 
-        if (texts.isEmpty()) issues += HealthIssue("—", 0, "No workflow files found in .github/workflows, so nothing builds on push.", "warn")
-        return HealthReport(issues.distinctBy { it.file + it.line + it.message }, texts, latest.size)
+        var add: String? = null
+        if (texts.isEmpty()) {
+            val kind = com.stellar.autohub.upload.ProjectKind.of(repo.kind)
+            add = com.stellar.autohub.editor.Templates.workflowFor(kind, repo.name)
+            issues += HealthIssue(
+                if (add != null) ".github/workflows/build.yml" else "—", 0,
+                "No workflow files found in .github/workflows, so nothing builds on push." +
+                    if (add != null) " AutoHub can add the standard ${kind.label} build (releases vX.Y.Z from main)." else "",
+                "warn",
+            )
+        }
+        return HealthReport(issues.distinctBy { it.file + it.line + it.message }, texts, latest.size, add)
     }
 }

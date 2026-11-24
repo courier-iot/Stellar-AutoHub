@@ -16,6 +16,8 @@ data class RepoProfile(
     val defaultBranch: String = "",
     /** No build notifications for this repo. */
     val muted: Boolean = false,
+    /** android | electron | node | dotnet | python | cpp | "" (unknown) */
+    val kind: String = "",
 ) {
     val baseBranch: String get() = defaultBranch.ifEmpty { branch }
     val fullName: String get() = "$owner/$name"
