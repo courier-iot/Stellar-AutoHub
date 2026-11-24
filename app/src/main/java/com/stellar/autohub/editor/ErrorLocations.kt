@@ -40,6 +40,16 @@ object ErrorLocations {
         return ErrorLocation(g[1], ln, col, msg)
     }
 
+    /**
+     * GitHub hides secret values in logs as "***". If a secret matches part of a path (like a key alias
+     * "stellar" in com/stellar/app), the path breaks. This finds the real path in the repo's file list.
+     */
+    fun unmask(path: String, repoPaths: Collection<String>): String {
+        if (!path.contains("***")) return path
+        val re = Regex("^" + path.split("***").joinToString("[^/]+") { Regex.escape(it) } + "$")
+        return repoPaths.firstOrNull { re.matches(it) } ?: path
+    }
+
     /** Unique locations found in error lines, in order. */
     fun all(lines: List<String>): List<ErrorLocation> {
         val seen = HashSet<String>()

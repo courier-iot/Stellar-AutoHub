@@ -242,10 +242,10 @@ object Templates {
             runs-on: ubuntu-latest
             steps:
               - name: Checkout
-                uses: actions/checkout@v4
+                uses: actions/checkout@v5
 
               - name: Set up JDK 17
-                uses: actions/setup-java@v4
+                uses: actions/setup-java@v5
                 with:
                   distribution: temurin
                   java-version: '17'
@@ -465,7 +465,7 @@ object Templates {
                 shell: bash
             steps:
               - name: Checkout
-                uses: actions/checkout@v4
+                uses: actions/checkout@v5
 
               - name: Set up Node.js
                 uses: actions/setup-node@v4

@@ -80,9 +80,10 @@ fun RepoScreen(
     LaunchedEffect(repoId) {
         if (repo.kind.isEmpty()) try {
             val tree = app.blobs.tree(repo).filter { it.type == "blob" }.map { it.path }
-            val kind = com.stellar.autohub.upload.ProjectKinds.detect(tree) { p ->
-                if (p.endsWith("package.json")) app.api.rawFile(repo.owner, repo.name, p, repo.branch) else null
-            }
+            // Fetch package.json first (detect() takes a plain, non-suspending reader)
+            val pkgPath = tree.firstOrNull { it == "package.json" } ?: tree.firstOrNull { it.count { c -> c == '/' } == 1 && it.endsWith("/package.json") }
+            val pkgText = pkgPath?.let { app.api.rawFile(repo.owner, repo.name, it, repo.branch) }
+            val kind = com.stellar.autohub.upload.ProjectKinds.detect(tree) { p -> if (p == pkgPath) pkgText else null }
             if (kind != com.stellar.autohub.upload.ProjectKind.UNKNOWN) app.store.upsertRepo(repo.copy(kind = kind.id))
         } catch (_: Exception) { }
     }

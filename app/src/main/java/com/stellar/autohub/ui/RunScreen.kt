@@ -113,9 +113,14 @@ fun RunScreen(
         val l = loaded; val j = logJob; val n = pickedStep
         if (l != null && j != null && n != null) Logs.stepSection(l, j, n) else null
     }
-    val locations = remember(sections, annotations) {
+    var repoPaths by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(loaded) {
+        if (loaded != null && repoPaths.isEmpty()) repoPaths = try { app.blobs.tree(repo).filter { it.type == "blob" }.map { it.path } } catch (e: Exception) { emptyList() }
+    }
+    val locations = remember(sections, annotations, repoPaths) {
         ErrorLocations.all(sections.flatMap { s -> s.lines.filter { it.kind == LineKind.ERROR }.map { it.text } } +
             annotations.mapNotNull { it.message })
+            .map { it.copy(path = ErrorLocations.unmask(it.path, repoPaths)) }
     }
 
     Screen(
@@ -333,7 +338,7 @@ fun RunScreen(
                             LineKind.HEADER -> Stellar.Cyan
                             LineKind.NORMAL -> Stellar.Text.copy(alpha = 0.8f)
                         }
-                        val loc = remember(l.text) { ErrorLocations.find(l.text) }
+                        val loc = remember(l.text, repoPaths) { ErrorLocations.find(l.text)?.let { it.copy(path = ErrorLocations.unmask(it.path, repoPaths)) } }
                         if (loc != null && loc.line > 0) MonoText(l.text, c, Modifier.clickable { openEditor(loc.path, loc.line) }.background(Stellar.Red.copy(alpha = 0.08f)))
                         else MonoText(l.text, c)
                     }
